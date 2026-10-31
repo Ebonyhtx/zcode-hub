@@ -182,3 +182,12 @@ input.min.wide{flex-basis:100%}
 .toast.bad{border-left-color:var(--bad)}
 @keyframes in{from{transform:translateX(24px);opacity:0}to{transform:none;opacity:1}}
 .spin-mini{display:inline-block;width:12px;height:12px;border:2px solid var(--acc2);border-top-color:transparent;border-radius:50%;animation:rot .7s linear infinite;vertical-align:-2px}
+
+/* polish: overlay/modal entrance + press feedback */
+.overlay{animation:fadeIn .16s ease}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.mbox{animation:pop .18s cubic-bezier(.2,.9,.3,1.2)}
+@keyframes pop{from{transform:scale(.94) translateY(8px);opacity:0}to{transform:none;opacity:1}}
+.btn:active,.switch-btn:active,.chkbtn:active,.camp-btn:active,.hbtn:active,.wbtn:active{transform:scale(.97)}
+.acct{transition:border-color .2s,box-shadow .2s,transform .12s}
+.acct:hover{transform:translateY(-1px)}
