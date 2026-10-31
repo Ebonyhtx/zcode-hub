@@ -296,6 +296,7 @@ function checkOne(key, btn) {
   .finally(function() { btn.disabled = false; btn.innerHTML = old; refresh(); });
 }
 window.checkOne = checkOne;
+document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeAddModal(); });
 
 function provMeta(p) {
   if (p === "bigmodel") return { cls: "bm", tag: "BigModel", tagCls: "bm", ch: "M" };
@@ -365,7 +366,7 @@ function cardHtml(p, quotaData, benefitData) {
     +'<div class="acct-body">'+buckets+'<div class="bfoot">'+benefit+"<button class='mini-check' title='只检测这个账号的福利' onclick='checkOne(\"" + esc(p.key) + "\",this)'>🔍</button>"+foot+'</div></div></div>';
 }
 var refreshing = false;
-function refresh(done) {
+function refresh(done, force) {
   if (refreshing) { if (done) done(); return; }
   refreshing = true;
   invoke("get_state").then(function(st) {
@@ -387,7 +388,7 @@ function refresh(done) {
     var list = st.profiles.slice().sort(function(a,b){ return (b.is_current?1:0)-(a.is_current?1:0); });
     if (!list.length) list = [{ key: "__current__", label: st.current_label, is_current: true, provider: st.current_provider }];
     Promise.all(list.map(function(p) {
-      return invoke("fetch_quota", { key: p.key }).catch(function(e) { return { ok: false, error: String(e) }; })
+      return invoke("fetch_quota", { key: p.key, force: !!force }).catch(function(e) { return { ok: false, error: String(e) }; })
         .then(function(q) { return cardHtml(p, q, bens[p.key]); });
     })).then(function(cards) {
       document.getElementById("acctList").innerHTML = cards.join("") || '<div class="empty"><div class="big">◈</div><p>暂无账号 · 点上方「添加账号」登录，或「保存当前登录」收编现有登录</p></div>';
@@ -397,7 +398,7 @@ function refresh(done) {
 }
 function manualRefresh(btn) {
   btn.classList.add("spin");
-  refresh(function() { setTimeout(function() { btn.classList.remove("spin"); }, 300); });
+  refresh(function() { setTimeout(function() { btn.classList.remove("spin"); }, 300); }, true);
 }
 function setAutoCheck() {
   invoke("set_settings", { minutes: Number(document.getElementById("autoCheckSel").value), notifyEnabled: document.getElementById("notifyTgl").checked }).then(function() {
