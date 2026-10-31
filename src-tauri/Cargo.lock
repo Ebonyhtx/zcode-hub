@@ -5551,7 +5551,7 @@ dependencies = [
 
 [[package]]
 name = "zcode-hub"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -5568,6 +5568,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-notification",
  "url",
+ "uuid",
  "whoami",
 ]
 

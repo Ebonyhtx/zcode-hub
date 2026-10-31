@@ -158,6 +158,48 @@ fn read_snapshot_value(dir: &PathBuf) -> Option<Value> {
 // 客户端 setting.json 的 providerFamilyDomain 必须 = 当前登录账号的家族（zai/bigmodel），
 // 否则账号提供商解析第一个检查就返回 null → 模型配置显示「请登录」、套餐额度不加载。
 // 交互登录时官方客户端会自己写这个字段；文件级切换/存档必须由 Hub 同步维护。
+// ---------------- 设备身份跟账号走 ----------------
+// 每个账号存档绑定独立 deviceMid：首次采纳当前设备的（未被其他存档占用时），
+// 否则生成新的 UUID；切换时写进客户端 telemetry-state.json。
+// 效果：不同账号在服务端各自呈现独立的设备标识，互不关联。
+fn live_device_mid() -> Option<String> {
+    let v: Value = std::fs::read_to_string(v2_dir().join("telemetry-state.json")).ok()
+        .and_then(|s| serde_json::from_str(&s).ok())?;
+    v.get("deviceMid").and_then(|m| m.as_str()).map(String::from).filter(|m| !m.trim().is_empty())
+}
+
+fn ensure_profile_device_mid(dir: &PathBuf, meta: &mut Value) -> String {
+    if let Some(m) = meta.get("device_mid").and_then(|v| v.as_str()) {
+        if !m.trim().is_empty() { return m.to_string(); }
+    }
+    let mut taken: Vec<String> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(profiles_dir()) {
+        for e in rd.flatten() {
+            if &e.path() == dir { continue; }
+            if let Ok(m) = read_json(&e.path().join("meta.json")) {
+                if let Some(dm) = m.get("device_mid").and_then(|v| v.as_str()) { taken.push(dm.to_string()); }
+            }
+        }
+    }
+    let mid = match live_device_mid() {
+        Some(m) if !taken.contains(&m) => m,
+        _ => uuid::Uuid::new_v4().to_string(),
+    };
+    meta["device_mid"] = json!(mid);
+    mid
+}
+
+fn write_live_device_mid(mid: &str) {
+    let p = v2_dir().join("telemetry-state.json");
+    let mut v: Value = std::fs::read_to_string(&p).ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| json!({}));
+    if !v.is_object() { v = json!({}); }
+    if v.get("deviceMid").and_then(|m| m.as_str()) == Some(mid) { return; }
+    v["deviceMid"] = json!(mid);
+    let _ = write_json(&p, &v);
+}
+
 fn sync_provider_family_domain(provider: &str) {
     if provider != "zai" && provider != "bigmodel" { return; }
     let p = v2_dir().join("setting.json");
@@ -442,7 +484,9 @@ fn capture_profile(name: Option<String>) -> serde_json::Value {
     let _ = write_snapshot(&dd, &creds);
     let provider = creds.get("oauth:active_provider").and_then(|v| v.as_str())
         .and_then(|s| decrypt_value(s).ok()).unwrap_or_default();
-    let _ = write_json(&dd.join("meta.json"), &json!({"label": label, "provider": provider, "captured_at": chrono::Utc::now().to_rfc3339()}));
+    let mut meta = json!({"label": label, "provider": provider, "captured_at": chrono::Utc::now().to_rfc3339()});
+    let _mid = ensure_profile_device_mid(&dd, &mut meta);
+    let _ = write_json(&dd.join("meta.json"), &meta);
     json!({"ok": true, "name": fname, "label": label})
 }
 
@@ -501,6 +545,13 @@ fn switch_profile(key: String) -> serde_json::Value {
         .and_then(|s| decrypt_value(s).ok())
         .unwrap_or_default();
     sync_provider_family_domain(&fam);
+    let mut meta = read_json(&prof_dir.join("meta.json")).ok()
+        .unwrap_or_else(|| json!({"label": key, "provider": fam}));
+    let mid = ensure_profile_device_mid(&prof_dir, &mut meta);
+    let _ = write_json(&prof_dir.join("meta.json"), &meta);
+    write_live_device_mid(&mid);
+    // 客户端会读套餐缓存，切换后必须清掉避免上一账号的套餐状态残留
+    let _ = std::fs::remove_file(v2_dir().join("coding-plan-cache.json"));
     // 客户端会读套餐缓存，切换后必须清掉避免上一账号的套餐状态残留
     let _ = std::fs::remove_file(v2_dir().join("coding-plan-cache.json"));
     let rel = if was { exe.as_ref().map(|e| launch_zcode_process(e)).unwrap_or(false) } else { false };
@@ -764,7 +815,9 @@ fn _oauth_worker(provider: String, poll_token: String) {
         let prof_dir = profiles_dir().join(&safe);
         let _ = std::fs::create_dir_all(&prof_dir);
         let _ = write_snapshot(&prof_dir, &serde_json::to_value(&encrypted).unwrap_or(json!({})));
-        let _ = write_json(&prof_dir.join("meta.json"), &json!({"label": label, "provider": provider, "captured_at": chrono::Utc::now().to_rfc3339()}));
+        let mut meta = json!({"label": label, "provider": provider, "captured_at": chrono::Utc::now().to_rfc3339()});
+        let _mid = ensure_profile_device_mid(&prof_dir, &mut meta);
+        let _ = write_json(&prof_dir.join("meta.json"), &meta);
         sync_provider_family_domain(&provider);
         set_oauth(json!({"status":"ready","label": label, "provider": provider, "name": safe, "warning": warning}));
         return;
