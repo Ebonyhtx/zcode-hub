@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# 推送前最后防线：全历史扫描
+bash "$(git rev-parse --show-toplevel)/scripts/secret-scan.sh" --history
