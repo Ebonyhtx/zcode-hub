@@ -3,6 +3,18 @@
 本文件记录 ZCode Hub 的显著变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.4.0] - 2026-10-31
+
+### 新增
+- 签名自动更新通道（tauri-plugin-updater）：内置公钥验签，设置面板内检查/一键更新；CI 发布 latest.json
+- 热切换（实验性，默认关）：不重启客户端直接换身份，双重回读验证，失败自动回退冷切换
+- JWT 过期徽章：本地解码 exp 预警失效存档（无 exp 字段的令牌不误报）
+- 中英双语全量支持（设置内切换，按系统语言初始化）
+
+### 安全
+- CSP 收紧：JS/CSS 全部外置，script-src 'self'，移除全部内联事件（事件委托重构）
+- Rust 单元测试：加密往返与官方 IV.TAG.CT 布局守护、路径穿越、JWT 过期、KDF（6 项）
+
 ## [1.3.0] - 2026-10-31
 
 ### 新增
