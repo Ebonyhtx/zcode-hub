@@ -210,10 +210,8 @@ fn write_live_device_mid(mid: &str) {
 const ARMS_DEFAULT_STORE_FILE: &str = "ZGVmYXVsdA.json";
 
 fn new_arms_uid() -> String {
-    use rand::Rng;
     const ALPHABET: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
-    let mut rng = rand::thread_rng();
-    let suffix: String = (0..16).map(|_| ALPHABET[rng.gen::<usize>() % 36] as char).collect();
+    let suffix: String = (0..16).map(|_| ALPHABET[rand::random_range(0..36)] as char).collect();
     format!("uid_{}", suffix)
 }
 
@@ -321,7 +319,7 @@ fn credential_secret() -> String {
         if !env.trim().is_empty() { return env.trim().to_string(); }
     }
     let home = dirs::home_dir().unwrap_or_default().to_string_lossy().to_string();
-    let user = whoami::username();
+    let user = whoami::username().unwrap_or_default();
     format!("zcode-credential-fallback:win32:{}:{}", home, user)
 }
 
@@ -944,9 +942,7 @@ fn set_oauth(v: Value) { *OAUTH_STATE.lock().unwrap() = Some(v); }
 fn get_oauth() -> Option<Value> { OAUTH_STATE.lock().unwrap().clone() }
 
 fn generate_poll_token() -> String {
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
-    (0..32).map(|_| format!("{:02x}", rng.gen::<u8>())).collect()
+    (0..32).map(|_| format!("{:02x}", rand::random::<u8>())).collect()
 }
 
 // 用系统 Shell 处理协议分发（等价于 Win+R 打开 URL），不经任何命令行解析，URL 里的 & % ? 都安全
@@ -1111,7 +1107,7 @@ fn _oauth_worker(provider: String, poll_token: String) {
 fn encrypt_value(plain: &str) -> String {
     let key = derive_key(&credential_secret());
     let cipher = Aes256Gcm::new_from_slice(&key).unwrap();
-    let iv: [u8; 12] = rand::Rng::gen(&mut rand::thread_rng());
+    let iv: [u8; 12] = rand::random();
     let ct = cipher.encrypt(Nonce::from_slice(&iv), plain.as_bytes()).unwrap();
     let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
     // 布局必须与 decrypt_value 一致：IV.TAG.CT（tag 在中段，密文在末段）
