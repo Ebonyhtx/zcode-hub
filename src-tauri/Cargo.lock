@@ -5768,7 +5768,7 @@ dependencies = [
 
 [[package]]
 name = "zcode-hub"
-version = "1.2.3"
+version = "1.4.1"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
