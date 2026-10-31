@@ -178,6 +178,8 @@ input.min{flex:1;min-width:110px;background:var(--card2);border:1px solid var(--
 input.min:focus{border-color:#b9bfd0}
 body[data-theme="dark"] input.min:focus{border-color:#3c3e58}
 input.min.wide{flex-basis:100%}
+.cfgsec{font-size:10.5px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--acc2);margin:14px 0 8px}
+.cfgsec:first-of-type{margin-top:2px}
 .mfoot{display:flex;justify-content:space-between;align-items:center;margin-top:14px}
 .reopen{border:none;background:transparent;color:var(--zai);cursor:pointer;font-size:11.5px;display:none}
 .reopen:hover{text-decoration:underline}
@@ -200,6 +202,7 @@ input.min.wide{flex-basis:100%}
   <span class="tspacer" data-tauri-drag-region></span>
   <button class="hbtn" id="refreshBtn" title="刷新" onclick="manualRefresh(this)"><i>⟳</i></button>
   <button class="hbtn" id="themeBtn" title="切换深浅色" onclick="toggleTheme()">🌙</button>
+  <button class="hbtn" title="设置 / 关于" onclick="showCfg()">⚙</button>
   <button class="wbtn" title="最小化" onclick="winMin()"><svg viewBox="0 0 10 10"><path d="M0 5h10"/></svg></button>
   <button class="wbtn" title="最大化/还原" onclick="winMax()"><svg viewBox="0 0 10 10"><rect x=".7" y=".7" width="8.6" height="8.6" rx="1"/></svg></button>
   <button class="wbtn close" title="隐藏到托盘" onclick="winHide()"><svg viewBox="0 0 10 10"><path d="M0 0l10 10M10 0L0 10"/></svg></button>
@@ -225,6 +228,18 @@ input.min.wide{flex-basis:100%}
 <div class="sec"><span class="t">Accounts · 账号库</span><span class="c num" id="profCount"></span></div>
 <div id="acctList"><div class="empty"><div class="big">◈</div><p>正在连接…</p></div></div>
 </div>
+<div class="overlay" id="cfgModal" style="display:none">
+<div class="mbox" style="width:460px"><h3>设置 / 关于</h3>
+<div class="cfgsec">关于</div>
+<div style="font-size:12px;color:var(--mut);margin-bottom:8px">ZCode Hub <b id="cfgVer" class="num" style="color:var(--tx)"></b> · 非官方多账号管理工具</div>
+<div class="mline"><button class="camp-btn" onclick="doCheckUpdate()">🔍 检查更新</button><button class="camp-btn" onclick="openUrl('https://github.com/Ebonyhtx/zcode-hub')">GitHub 仓库</button><span class="mut" id="updTxt"></span></div>
+<div class="cfgsec">ZCode</div>
+<div class="mline"><span class="mlbl">客户端路径</span><input id="zcPath" type="text" class="min wide" placeholder="留空自动探测（运行中客户端 / 默认安装位置）"><button class="camp-btn" onclick="saveZcPath()">保存</button></div>
+<div class="mline"><span class="mlbl">数据目录</span><button class="camp-btn" onclick="invoke('open_data_dir')">打开 Hub 数据</button><button class="camp-btn" onclick="invoke('open_zcode_data_dir')">打开 ZCode 数据</button></div>
+<div class="cfgsec">系统</div>
+<div class="mline"><span class="mlbl">开机自启</span><label class="tgl"><input type="checkbox" id="autoStartTgl" onchange="setAutoStart(this.checked)"><i></i></label><span class="mut">写入启动文件夹快捷方式</span></div>
+<div class="mfoot"><span></span><button class="cancel" onclick="document.getElementById('cfgModal').style.display='none'">关闭</button></div>
+</div></div>
 <div class="overlay" id="bakModal" style="display:none">
 <div class="mbox"><h3>备份 / 导入账号库</h3><div class="sub">备份文件用口令加密（PBKDF2 + AES-256-GCM），可在任何电脑导入恢复；口令丢失无法找回。</div>
 <div class="mline"><span class="mlbl">导出到桌面</span><input id="bakPwd" type="password" class="min" placeholder="设置口令（≥6 位）"><button class="camp-btn" onclick="doExport()">导出 .zhb</button></div>
@@ -488,6 +503,41 @@ window.doSwitch = doSwitch; window.doDelete = doDelete; window.doCapture = doCap
 window.doCheck = doCheck; window.doAdd = doAdd; window.doKill = doKill;
 window.closeAddModal = closeAddModal; window.doOpenClient = doOpenClient; window.oauthOpen = oauthOpen;
 window.setAutoCheck = setAutoCheck; window.setNotify = setNotify; window.manualRefresh = manualRefresh;
+function showCfg() {
+  invoke('get_state').then(function(st) {
+    document.getElementById('cfgVer').textContent = 'v' + (st.version || '?');
+    document.getElementById('autoStartTgl').checked = !!st.autostart;
+    var zp = st.settings && st.settings.zcode_path ? st.settings.zcode_path : '';
+    if (document.activeElement !== document.getElementById('zcPath')) document.getElementById('zcPath').value = zp;
+    document.getElementById('updTxt').textContent = '';
+    document.getElementById('cfgModal').style.display = 'flex';
+  });
+}
+function saveZcPath() {
+  var p = document.getElementById('zcPath').value.trim();
+  invoke('set_settings', { minutes: Number(document.getElementById('autoCheckSel').value), notifyEnabled: document.getElementById('notifyTgl').checked, zcodePath: p }).then(function() {
+    pushToast('ZCode 路径已保存（留空 = 自动探测）', 'ok');
+  }).catch(function(e) { pushToast(String(e), 'bad'); });
+}
+function setAutoStart(v) {
+  invoke('set_autostart', { enable: !!v }).then(function(r) {
+    pushToast(r.ok ? (r.enabled ? '已开启开机自启' : '已关闭开机自启') : '设置失败', r.ok ? 'ok' : 'bad');
+  }).catch(function(e) { pushToast(String(e), 'bad'); });
+}
+function doCheckUpdate() {
+  var t = document.getElementById('updTxt');
+  t.textContent = '检查中…';
+  invoke('check_update').then(function(r) {
+    if (!r.ok) { t.textContent = '检查失败: ' + (r.error || '?'); return; }
+    if (!r.latest) { t.textContent = r.note || '已是最新'; return; }
+    if (r.up_to_date) t.textContent = '已是最新（v' + r.current + '）';
+    else {
+      t.innerHTML = '发现新版本 v' + r.latest + ' <a href="#" onclick="openUrl(\'' + r.url + '\');return false" style="color:var(--zai)">前往下载</a>';
+      pushToast('🆕 发现新版本 v' + r.latest, 'warn');
+    }
+  }).catch(function(e) { t.textContent = String(e); });
+}
+function openUrl(u) { invoke('open_url', { url: u }); }
 function showBak() { document.getElementById('bakModal').style.display = 'flex'; document.getElementById('bakStatus').textContent = ''; }
 function doExport() {
   var pwd = document.getElementById('bakPwd').value;
@@ -511,6 +561,8 @@ function doImport() {
   }).catch(function(e) { document.getElementById('bakStatus').textContent = String(e); });
 }
 window.showBak = showBak; window.doExport = doExport; window.doImport = doImport;
+window.showCfg = showCfg; window.saveZcPath = saveZcPath; window.setAutoStart = setAutoStart;
+window.doCheckUpdate = doCheckUpdate; window.openUrl = openUrl;
 function tryStart() { if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) { refresh(); setInterval(function(){ refresh(); }, 60000); } else { setTimeout(tryStart, 200); } }
 tryStart();
 </script></body></html>

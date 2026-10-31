@@ -473,6 +473,13 @@ fn http() -> &'static reqwest::blocking::Client {
 
 fn zcode_exe_path() -> Option<String> {
     if let Some(p) = EXE_CACHE.lock().unwrap().clone() { return Some(p); }
+    // 用户在设置里指定的路径优先（失效则回落到自动探测）
+    if let Some(p) = load_settings().get("zcode_path").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+        if std::path::Path::new(&p).exists() {
+            *EXE_CACHE.lock().unwrap() = Some(p.clone());
+            return Some(p);
+        }
+    }
     let found = Command::new("powershell").args(["-NoProfile", "-Command",
         "Get-Process ZCode -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Path"])
         .creation_flags(0x08000000)
@@ -522,6 +529,84 @@ fn telemetry_device_mid() -> String {
 #[derive(serde::Serialize)]
 struct ProfileInfo { key: String, label: String, captured_at: String, is_current: bool, provider: String }
 
+fn startup_lnk() -> PathBuf {
+    let base = std::env::var("APPDATA").unwrap_or_default();
+    PathBuf::from(base).join(r"Microsoft\Windows\Start Menu\Programs\Startup").join("ZCode Hub.lnk")
+}
+
+fn autostart_enabled() -> bool { startup_lnk().exists() }
+
+fn set_autostart_internal(enable: bool) -> Result<(), String> {
+    let lnk = startup_lnk();
+    if !enable {
+        if lnk.exists() { std::fs::remove_file(&lnk).map_err(|e| e.to_string())?; }
+        return Ok(());
+    }
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let script = format!(
+        "$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{}');$s.TargetPath='{}';$s.WorkingDirectory='{}';$s.Save()",
+        lnk.display(), exe.display(), exe.parent().map(|p| p.display().to_string()).unwrap_or_default());
+    let out = Command::new("powershell").args(["-NoProfile", "-Command", &script])
+        .creation_flags(0x08000000).output().map_err(|e| e.to_string())?;
+    if !out.status.success() { return Err("创建自启快捷方式失败".into()); }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_autostart(enable: bool) -> serde_json::Value {
+    match set_autostart_internal(enable) {
+        Ok(()) => json!({"ok": true, "enabled": autostart_enabled()}),
+        Err(e) => json!({"ok": false, "error": e}),
+    }
+}
+
+fn open_in_explorer(dir: &PathBuf) -> serde_json::Value {
+    if !dir.exists() { let _ = std::fs::create_dir_all(dir); }
+    let _ = Command::new("explorer").arg(dir).creation_flags(0x08000000).spawn();
+    json!({"ok": true})
+}
+
+#[tauri::command]
+fn open_data_dir() -> serde_json::Value { open_in_explorer(&app_data_dir()) }
+
+#[tauri::command]
+fn open_zcode_data_dir() -> serde_json::Value { open_in_explorer(&v2_dir()) }
+
+// 检查更新：查 GitHub Releases 最新 tag（仓库转公开后自动生效；私有期间友好降级）
+#[tauri::command]
+fn check_update() -> serde_json::Value {
+    let current = env!("CARGO_PKG_VERSION");
+    let resp = http().get("https://api.github.com/repos/Ebonyhtx/zcode-hub/releases/latest")
+        .header("User-Agent", "zcode-hub")
+        .timeout(std::time::Duration::from_secs(15)).send();
+    match resp {
+        Ok(r) if r.status().as_u16() == 200 => {
+            let j: Value = match r.json() { Ok(j) => j, Err(e) => return json!({"ok": false, "error": e.to_string()}) };
+            let latest = j.get("tag_name").and_then(|v| v.as_str()).unwrap_or("").trim_start_matches('v').to_string();
+            let url = j.get("html_url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let pv = |s: &str| s.split('.').map(|x| x.parse::<u64>().unwrap_or(0)).collect::<Vec<u64>>();
+            let (a, b) = (pv(&latest), pv(current));
+            let mut up_to_date = true;
+            for i in 0..3 {
+                let l = a.get(i).unwrap_or(&0); let c = b.get(i).unwrap_or(&0);
+                if l > c { up_to_date = false; break; }
+                if l < c { up_to_date = true; break; }
+            }
+            json!({"ok": true, "current": current, "latest": latest, "up_to_date": up_to_date, "url": url})
+        }
+        Ok(r) => json!({"ok": true, "current": current, "latest": "", "up_to_date": true,
+                        "note": format!("仓库当前不可公开查询（HTTP {}），转公开后可在线检查更新", r.status().as_u16())}),
+        Err(e) => json!({"ok": false, "error": e.to_string()}),
+    }
+}
+
+#[tauri::command]
+fn open_url(url: String) -> serde_json::Value {
+    if !url.starts_with("https://") { return json!({"ok": false, "error": "仅允许 https 链接"}); }
+    open_in_browser(&url);
+    json!({"ok": true})
+}
+
 #[tauri::command]
 fn get_state() -> serde_json::Value {
     let cur = cred_path();
@@ -563,7 +648,8 @@ fn get_state() -> serde_json::Value {
         }
     }
     json!({ "current_label": cur_label, "current_provider": cur_provider, "profiles": profiles, "zcode_running": zcode_running(), "zcode_exe": zcode_exe_path().unwrap_or_default(),
-            "settings": load_settings(), "benefits": benefits, "last_check": *LAST_CHECK.lock().unwrap() })
+            "settings": load_settings(), "benefits": benefits, "last_check": *LAST_CHECK.lock().unwrap(),
+            "version": env!("CARGO_PKG_VERSION"), "autostart": autostart_enabled() })
 }
 
 #[tauri::command]
@@ -1150,10 +1236,12 @@ fn check_all_benefits() -> serde_json::Value {
 fn get_settings() -> serde_json::Value { load_settings() }
 
 #[tauri::command]
-fn set_settings(minutes: i64, notify_enabled: Option<bool>) -> serde_json::Value {
+fn set_settings(minutes: i64, notify_enabled: Option<bool>, zcode_path: Option<String>) -> serde_json::Value {
     let mut s = load_settings();
     s["auto_check_minutes"] = json!(minutes.clamp(0, 1440));
     s["notify_enabled"] = json!(notify_enabled.unwrap_or(true));
+    let zp = zcode_path.map(|p| p.trim().trim_matches('"').to_string()).unwrap_or_default();
+    if zp.is_empty() { s["zcode_path"] = json!(null); } else { s["zcode_path"] = json!(zp); }
     let _ = write_json(&config_path(), &s);
     *SETTINGS.lock().unwrap() = Some(s);
     *LAST_CHECK.lock().unwrap() = None; // 保存后立即按新周期跑一轮
@@ -1266,6 +1354,7 @@ pub fn run() {
             check_benefits, check_all_benefits, get_settings, set_settings,
             win_minimize, win_toggle_maximize, win_hide, win_start_drag,
             export_bundle, import_bundle,
+            set_autostart, open_data_dir, open_zcode_data_dir, check_update, open_url,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
