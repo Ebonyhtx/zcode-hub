@@ -1,6 +1,9 @@
 # 行尾规范化：仓库内统一 LF，跨平台协作不打架
 * text=auto eol=lf
 
+*.sh text eol=lf
+*.py text eol=lf
+
 # Windows 专属脚本保留 CRLF
 *.bat text eol=crlf
 *.ps1 text eol=crlf
