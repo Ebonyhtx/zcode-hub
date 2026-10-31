@@ -527,7 +527,19 @@ fn telemetry_device_mid() -> String {
 // ------------------------------------------------------------------- structs
 
 #[derive(serde::Serialize)]
-struct ProfileInfo { key: String, label: String, captured_at: String, is_current: bool, provider: String }
+struct ProfileInfo { key: String, label: String, captured_at: String, is_current: bool, provider: String, jwt_expired: bool }
+
+// 令牌载荷若带 exp（部分旧格式/未来格式），本地解码判定是否已过期（30s 时钟容忍）
+fn jwt_expired(creds: &Value) -> bool {
+    let Some(jwt) = creds.get("zcodejwttoken").and_then(|v| v.as_str()) else { return false };
+    let Some(payload) = jwt.split('.').nth(1) else { return false };
+    let mut padded = payload.trim_end_matches('=').to_string();
+    while padded.len() % 4 != 0 { padded.push('='); }
+    let Ok(bytes) = base64::engine::general_purpose::URL_SAFE.decode(padded.as_bytes()) else { return false };
+    let Ok(v) = serde_json::from_slice::<Value>(&bytes) else { return false };
+    let Some(exp) = v.get("exp").and_then(|e| e.as_i64()) else { return false };
+    exp <= chrono::Utc::now().timestamp() + 30
+}
 
 fn startup_lnk() -> PathBuf {
     let base = std::env::var("APPDATA").unwrap_or_default();
@@ -608,6 +620,20 @@ fn open_url(url: String) -> serde_json::Value {
 }
 
 #[tauri::command]
+async fn install_update(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    let update = updater.check().await.map_err(|e| e.to_string())?;
+    match update {
+        Some(u) => {
+            let _ = u.download_and_install(|_, _| {}, || {}).await;
+            app.restart();
+        }
+        None => Ok(json!({"ok": true, "up_to_date": true})),
+    }
+}
+
+#[tauri::command]
 fn get_state() -> serde_json::Value {
     let cur = cred_path();
     let cur_label = if cur.exists() { read_json(&cur).map(|c| account_label(&c)).unwrap_or("(err)".into()) } else { "(未登录)".into() };
@@ -638,7 +664,8 @@ fn get_state() -> serde_json::Value {
                     .unwrap_or_default();
             }
             let ic = !cur_label.starts_with('(') && label == cur_label;
-            profiles.push(ProfileInfo { key: name, label, captured_at: ca, is_current: ic, provider });
+            let je = pval.as_ref().map(|c| jwt_expired(c)).unwrap_or(false);
+            profiles.push(ProfileInfo { key: name, label, captured_at: ca, is_current: ic, provider, jwt_expired: je });
         }
     }
     let benefits = BENEFITS.lock().unwrap().clone().unwrap_or_default();
@@ -675,14 +702,77 @@ fn capture_profile(name: Option<String>) -> serde_json::Value {
     json!({"ok": true, "name": fname, "label": label})
 }
 
+fn hot_swap_verified(cur: &PathBuf, prof_v: &Value) -> bool {
+    // 写入后回读两次校验账号身份——客户端若用内存状态覆盖写回则重试，三次失败放弃
+    let label = account_label(prof_v);
+    for attempt in 0..3u32 {
+        if write_json(cur, prof_v).is_err() {
+            std::thread::sleep(std::time::Duration::from_millis(250 * (attempt as u64 + 1)));
+            continue;
+        }
+        if let Ok(v1) = read_json(cur) {
+            if account_label(&v1) == label {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                if let Ok(v2) = read_json(cur) {
+                    if account_label(&v2) == label { return true; }
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250 * (attempt as u64 + 1)));
+    }
+    false
+}
+
 #[tauri::command]
-fn switch_profile(key: String) -> serde_json::Value {
+fn switch_profile(key: String, hot: Option<bool>) -> serde_json::Value {
     if let Err(e) = safe_key(&key) { return denied(e); }
     let prof_dir = profiles_dir().join(&key);
     let prof_v = match read_snapshot_value(&prof_dir) { Some(v) => v, None => return json!({"ok": false, "error": format!("'{}' 不存在", key)}) };
     let cur = cred_path();
     let exe = zcode_exe_path();
     let was = zcode_running();
+    let want_hot = hot.unwrap_or(false)
+        && load_settings().get("hot_switch").and_then(|v| v.as_bool()).unwrap_or(false)
+        && was;
+    if want_hot {
+        // 热切换：不杀客户端，直接换凭据并回读验证；验证失败自动回退重启路径
+        if let Ok(cur_v) = read_json(&cur) {
+            if cur_v.get("zcodejwttoken").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false) {
+                let cl = account_label(&cur_v);
+                let mut known_dir: Option<PathBuf> = None;
+                if let Ok(rd) = std::fs::read_dir(profiles_dir()) {
+                    for e in rd.flatten() {
+                        if read_snapshot_value(&e.path()).map(|c| account_label(&c)) == Some(cl.clone()) {
+                            known_dir = Some(e.path()); break;
+                        }
+                    }
+                }
+                if let Some(kd) = known_dir.as_ref() { let _ = write_snapshot(kd, &cur_v); }
+                else {
+                    let auto = format!("autosave-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
+                    let _ = std::fs::create_dir_all(profiles_dir().join(&auto));
+                    let _ = write_snapshot(&profiles_dir().join(&auto), &cur_v);
+                    let _ = write_json(&profiles_dir().join(&auto).join("meta.json"), &json!({"label": cl, "captured_at": chrono::Utc::now().to_rfc3339()}));
+                }
+            }
+        }
+        if hot_swap_verified(&cur, &prof_v) {
+            let fam = prof_v.get("oauth:active_provider").and_then(|v| v.as_str())
+                .and_then(|s| decrypt_value(s).ok())
+                .unwrap_or_default();
+            sync_provider_family_domain(&fam);
+            let mut meta = read_json(&prof_dir.join("meta.json")).ok()
+                .unwrap_or_else(|| json!({"label": key, "provider": fam}));
+            let mid = ensure_profile_device_mid(&prof_dir, &mut meta);
+            let auid = ensure_profile_arms_uid(&prof_dir, &mut meta);
+            let _ = write_json(&prof_dir.join("meta.json"), &meta);
+            write_live_device_mid(&mid);
+            write_live_arms_uid(&auid);
+            let _ = std::fs::remove_file(v2_dir().join("coding-plan-cache.json"));
+            return json!({"ok": true, "hot": true, "relaunched": false});
+        }
+        // 热切换失败 → 落回冷路径（杀进程 + 重启）
+    }
     if was {
         // 先杀干净再动文件——绝不在客户端运行时替换凭据
         if !kill_zcode_process() {
@@ -1126,7 +1216,7 @@ fn config_path() -> PathBuf { app_data_dir().join("hub-config.json") }
 fn load_settings() -> Value {
     let mut st = SETTINGS.lock().unwrap();
     if st.is_none() {
-        *st = Some(read_json(&config_path()).unwrap_or(json!({"auto_check_minutes": 15, "notify_enabled": true})));
+        *st = Some(read_json(&config_path()).unwrap_or(json!({"auto_check_minutes": 15, "notify_enabled": true, "hot_switch": false})));
     }
     st.clone().unwrap()
 }
@@ -1236,10 +1326,11 @@ fn check_all_benefits() -> serde_json::Value {
 fn get_settings() -> serde_json::Value { load_settings() }
 
 #[tauri::command]
-fn set_settings(minutes: i64, notify_enabled: Option<bool>, zcode_path: Option<String>) -> serde_json::Value {
+fn set_settings(minutes: i64, notify_enabled: Option<bool>, zcode_path: Option<String>, hot_switch: Option<bool>) -> serde_json::Value {
     let mut s = load_settings();
     s["auto_check_minutes"] = json!(minutes.clamp(0, 1440));
     s["notify_enabled"] = json!(notify_enabled.unwrap_or(true));
+    if let Some(h) = hot_switch { s["hot_switch"] = json!(h); }
     let zp = zcode_path.map(|p| p.trim().trim_matches('"').to_string()).unwrap_or_default();
     if zp.is_empty() { s["zcode_path"] = json!(null); } else { s["zcode_path"] = json!(zp); }
     let _ = write_json(&config_path(), &s);
@@ -1331,6 +1422,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             migrate_legacy_data();
             *APP_HANDLE.lock().unwrap() = Some(app.handle().clone());
@@ -1354,10 +1446,82 @@ pub fn run() {
             check_benefits, check_all_benefits, get_settings, set_settings,
             win_minimize, win_toggle_maximize, win_hide, win_start_drag,
             export_bundle, import_bundle,
-            set_autostart, open_data_dir, open_zcode_data_dir, check_update, open_url,
+            set_autostart, open_data_dir, open_zcode_data_dir, check_update, open_url, install_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
 fn main() { run() }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enc_dec_roundtrip() {
+        let v = encrypt_value("测试-token-123");
+        assert!(v.starts_with(ENC_PREFIX));
+        assert_eq!(decrypt_value(&v).unwrap(), "测试-token-123");
+    }
+
+    #[test]
+    fn enc_layout_is_iv_tag_ct() {
+        // 官方布局：IV.TAG.CT —— tag 固定 16 字节在中段；改错顺序会导致存量数据全灭
+        let enc = encrypt_value("abc");
+        let parts: Vec<&str> = enc[ENC_PREFIX.len()..].split('.').collect();
+        assert_eq!(parts.len(), 3);
+        let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        assert_eq!(engine.decode(parts[0]).unwrap().len(), 12); // nonce
+        assert_eq!(engine.decode(parts[1]).unwrap().len(), 16); // tag
+        assert!(engine.decode(parts[2]).unwrap().len() >= 3);   // ciphertext
+    }
+
+    #[test]
+    fn safe_key_blocks_traversal() {
+        assert!(safe_key("../x").is_err());
+        assert!(safe_key("..").is_err());
+        assert!(safe_key("a/b").is_err());
+        assert!(safe_key("a").is_err());
+        assert!(safe_key("a:b").is_err());
+        assert!(safe_key(".hidden").is_err());
+        assert!(safe_key("").is_err());
+        assert!(safe_key("test-account.example-mail.com").is_ok());
+        assert!(safe_key("__current__").is_ok());
+    }
+
+    #[test]
+    fn jwt_expired_detects_exp_claim() {
+        use base64::Engine as _;
+        let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let mk = |exp: i64| -> String {
+            let claims = json!({"exp": exp, "sub": "u1"});
+            format!("h.{}.s", engine.encode(claims.to_string().as_bytes()))
+        };
+        let now = chrono::Utc::now().timestamp();
+        let expired = json!({"zcodejwttoken": mk(now - 3600)});
+        let fresh = json!({"zcodejwttoken": mk(now + 3600)});
+        let no_exp = json!({"zcodejwttoken": format!("h.{}.s", engine.encode(json!({"sub":"u"}).to_string().as_bytes()))});
+        assert!(jwt_expired(&expired));
+        assert!(!jwt_expired(&fresh));
+        assert!(!jwt_expired(&no_exp)); // 无 exp 不误报
+    }
+
+    #[test]
+    fn bundle_kdf_deterministic_and_password_sensitive() {
+        let salt = [7u8; 16];
+        let a = bundle_key("password1", &salt);
+        let b = bundle_key("password1", &salt);
+        let c = bundle_key("password2", &salt);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn live_device_mid_helpers_exist() {
+        // 冒烟：arms 目录推导不含空项
+        let dirs = arms_store_dirs();
+        assert!(dirs.iter().all(|d| d.file_name().is_some()));
+    }
+}
