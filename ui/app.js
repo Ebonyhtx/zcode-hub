@@ -18,7 +18,7 @@ var I18N = {
     bm_name: "BigModel 账号", bm_desc: "bigmodel.cn · 智谱个人 / 团队套餐",
     opening: "正在打开 {p} 官方登录页…", oauth_ok: "✓ 登录成功：{l}", oauth_fail: "✗ 失败: {e}", reopen: "↻ 重新打开登录页", cancel: "取消",
     cfg_title: "设置 / 关于", about: "关于", about_line: " · 非官方多账号管理工具", check_upd: "🔍 检查更新", repo: "GitHub 仓库",
-    zcode_sec: "ZCode", client_path: "客户端路径", path_ph: "留空自动探测（运行中客户端 / 默认安装位置）", save: "保存",
+    zcode_sec: "ZCode", client_path: "客户端路径", path_ph: "例：C:\Program Files\ZCode\ZCode.exe（留空自动探测）", save: "保存",
     datadir: "数据目录", open_hub_data: "打开 Hub 数据", open_zdata: "打开 ZCode 数据",
     sys_sec: "系统", autostart: "开机自启", autostart_hint: "写入启动文件夹快捷方式",
     hot: "热切换（实验）", hot_hint: "不重启客户端直接换号，失败自动回退",
@@ -59,7 +59,7 @@ var I18N = {
     bm_name: "BigModel account", bm_desc: "bigmodel.cn · Zhipu individual / team plans",
     opening: "Opening {p} official login…", oauth_ok: "✓ Signed in: {l}", oauth_fail: "✗ Failed: {e}", reopen: "↻ Reopen login page", cancel: "Cancel",
     cfg_title: "Settings / About", about: "About", about_line: " · unofficial multi-account manager", check_upd: "🔍 Check updates", repo: "GitHub repo",
-    zcode_sec: "ZCode", client_path: "Client path", path_ph: "Empty = auto-detect (running client / default locations)", save: "Save",
+    zcode_sec: "ZCode", client_path: "Client path", path_ph: "e.g. C:\Program Files\ZCode\ZCode.exe (empty = auto-detect)", save: "Save",
     datadir: "Data dirs", open_hub_data: "Hub data", open_zdata: "ZCode data",
     sys_sec: "System", autostart: "Launch at startup", autostart_hint: "Startup-folder shortcut",
     hot: "Hot switch (exp.)", hot_hint: "Switch identity without restarting; falls back on failure",
@@ -270,10 +270,6 @@ function refresh(done, force) {
     });
   }).catch(function(e) { refreshing = false; if (done) done(); pushToast(t("t_refresh_fail", {e: String(e)}), "bad"); });
 }
-function manualRefresh(btn) {
-  btn.classList.add("spin");
-  refresh(function() { setTimeout(function() { btn.classList.remove("spin"); }, 300); }, true);
-}
 
 /* ---------------- settings & actions ---------------- */
 function setAutoCheck() {
@@ -405,7 +401,8 @@ function showCfg() {
 }
 function saveZcPath() {
   var p = document.getElementById("zcPath").value.trim();
-  invoke("set_settings", { minutes: Number(document.getElementById("autoCheckSel").value), zcodePath: p }).then(function() {
+  invoke("set_settings", { minutes: Number(document.getElementById("autoCheckSel").value), zcodePath: p }).then(function(r) {
+    if (r && r.ok === false) { pushToast(r.error, "bad"); return; }
     pushToast(t("t_path_saved"), "ok");
   }).catch(function(e) { pushToast(String(e), "bad"); });
 }
@@ -450,7 +447,6 @@ document.addEventListener("click", function(e) {
   var a = el.getAttribute("data-action");
   var key = el.getAttribute("data-key");
   switch (a) {
-    case "refresh": manualRefresh(el); break;
     case "theme": toggleTheme(); break;
     case "cfg": showCfg(); break;
     case "min": winMin(); break;
