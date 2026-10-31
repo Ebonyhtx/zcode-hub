@@ -191,3 +191,14 @@ input.min.wide{flex-basis:100%}
 .btn:active,.switch-btn:active,.chkbtn:active,.camp-btn:active,.hbtn:active,.wbtn:active{transform:scale(.97)}
 .acct{transition:border-color .2s,box-shadow .2s,transform .12s}
 .acct:hover{transform:translateY(-1px)}
+
+/* fold / collapse */
+.acct.folded .acct-body{display:none}
+.acct.folded{margin-bottom:8px}
+.chev{width:22px;height:22px;border:none;background:transparent;color:var(--faint);cursor:pointer;flex:none;font-size:10px;transition:transform .2s;line-height:1}
+.acct.folded .chev{transform:rotate(-90deg)}
+.acct-head{cursor:pointer}
+.secbtn{border:1px solid var(--line2);background:var(--card);color:var(--mut);border-radius:6px;padding:1px 9px;font-size:10.5px;cursor:pointer;transition:.15s}
+.secbtn:hover{color:var(--tx);border-color:#b9bfd0}
+body[data-theme="dark"] .secbtn:hover{border-color:#3c3e58}
+.tag.hasben{background:var(--accbg);color:var(--acc2)}

@@ -10,7 +10,7 @@ var I18N = {
     check_all: "🔍 检测全部账号", checking_dots: "⏳ 检测中…", last_check: "上次", never_checked: "未自动检测",
     accounts: "Accounts · 账号库", n_accounts: " 个账号", connecting: "正在连接…", no_accounts: "暂无账号 · 点上方「添加账号」登录，或「保存当前登录」收编现有登录",
     unknown: "未知", current: "当前", expired: "已过期", not_checked: "🔎 未检测", ben_none: "✓ 无待领福利", ben_has: "🎁 {n} 个待领福利", ben_fail: "⚠ 检测失败: {e}",
-    claim: "去领取", use_now: "✓ 当前使用中", switch_to: "⇄ 切换到此账号", del_title: "删除存档", mini_title: "只检测这个账号的福利",
+    claim: "去领取", use_now: "✓ 当前使用中", switch_to: "⇄ 切换到此账号", del_title: "删除存档", fold_all: "全部收起", expand_all: "全部展开", mini_title: "只检测这个账号的福利",
     no_quota: "暂无额度数据", quota_fail: "获取失败", used_up: "已用完", remain: " 剩余", total: "总 ", used: " · 已用 ", expires: " 到期",
     week_plan: "周末福利", base_plan: "基础套餐", other_plan: "其他",
     add_title: "添加账号", add_sub: "选择账号类型，浏览器完成官方登录后自动存入账号库。",
@@ -18,7 +18,7 @@ var I18N = {
     bm_name: "BigModel 账号", bm_desc: "bigmodel.cn · 智谱个人 / 团队套餐",
     opening: "正在打开 {p} 官方登录页…", oauth_ok: "✓ 登录成功：{l}", oauth_fail: "✗ 失败: {e}", reopen: "↻ 重新打开登录页", cancel: "取消",
     cfg_title: "设置 / 关于", about: "关于", about_line: " · 非官方多账号管理工具", check_upd: "🔍 检查更新", repo: "GitHub 仓库",
-    zcode_sec: "ZCode", client_path: "客户端路径", path_ph: "例：C:\Program Files\ZCode\ZCode.exe（留空自动探测）", save: "保存",
+    zcode_sec: "ZCode", client_path: "客户端路径", path_ph: "例：C:\\Program Files\\ZCode\\ZCode.exe（留空自动探测）", save: "保存",
     datadir: "数据目录", open_hub_data: "打开 Hub 数据", open_zdata: "打开 ZCode 数据",
     sys_sec: "系统", autostart: "开机自启", autostart_hint: "写入启动文件夹快捷方式",
     hot: "热切换（实验）", hot_hint: "不重启客户端直接换号，失败自动回退",
@@ -51,7 +51,7 @@ var I18N = {
     check_all: "🔍 Check all accounts", checking_dots: "⏳ Checking…", last_check: "Last", never_checked: "Not checked yet",
     accounts: "Accounts", n_accounts: " accounts", connecting: "Connecting…", no_accounts: "No accounts yet · use \"Add account\" or \"Save current login\"",
     unknown: "Unknown", current: "Current", expired: "Expired", not_checked: "🔎 Not checked", ben_none: "✓ Nothing to claim", ben_has: "🎁 {n} claimable", ben_fail: "⚠ Check failed: {e}",
-    claim: "Claim", use_now: "✓ In use", switch_to: "⇄ Switch to this", del_title: "Delete snapshot", mini_title: "Check this account only",
+    claim: "Claim", use_now: "✓ In use", switch_to: "⇄ Switch to this", del_title: "Delete snapshot", fold_all: "Collapse all", expand_all: "Expand all", mini_title: "Check this account only",
     no_quota: "No quota data", quota_fail: "Fetch failed", used_up: "Used up", remain: " left", total: "Total ", used: " · used ", expires: " expires",
     week_plan: "Weekend bonus", base_plan: "Base plan", other_plan: "Other",
     add_title: "Add account", add_sub: "Pick a provider, finish official login in browser, saved automatically.",
@@ -59,7 +59,7 @@ var I18N = {
     bm_name: "BigModel account", bm_desc: "bigmodel.cn · Zhipu individual / team plans",
     opening: "Opening {p} official login…", oauth_ok: "✓ Signed in: {l}", oauth_fail: "✗ Failed: {e}", reopen: "↻ Reopen login page", cancel: "Cancel",
     cfg_title: "Settings / About", about: "About", about_line: " · unofficial multi-account manager", check_upd: "🔍 Check updates", repo: "GitHub repo",
-    zcode_sec: "ZCode", client_path: "Client path", path_ph: "e.g. C:\Program Files\ZCode\ZCode.exe (empty = auto-detect)", save: "Save",
+    zcode_sec: "ZCode", client_path: "Client path", path_ph: "e.g. C:\\Program Files\\ZCode\\ZCode.exe (empty = auto-detect)", save: "Save",
     datadir: "Data dirs", open_hub_data: "Hub data", open_zdata: "ZCode data",
     sys_sec: "System", autostart: "Launch at startup", autostart_hint: "Startup-folder shortcut",
     hot: "Hot switch (exp.)", hot_hint: "Switch identity without restarting; falls back on failure",
@@ -216,6 +216,24 @@ function renderBenefitState(b) {
   }).join("") + '</div>';
   return '<div class="bstate has">'+esc(t("ben_has", {n: b.count}))+when+'</div>' + rows;
 }
+function foldState() { try { return JSON.parse(localStorage.getItem("hub-fold") || "{}"); } catch(e) { return {}; } }
+function setFold(key, v) {
+  var f = foldState(); f[key] = v;
+  try { localStorage.setItem("hub-fold", JSON.stringify(f)); } catch(e) {}
+  refresh();
+}
+function isFolded(p) {
+  var f = foldState();
+  if (f[p.key] !== undefined) return f[p.key];
+  return !p.is_current; // 默认：当前账号展开，其余收起
+}
+function foldAll(v) {
+  var st = window.__lastState;
+  var f = foldState();
+  (st ? st.profiles : []).forEach(function(p) { f[p.key] = v; });
+  try { localStorage.setItem("hub-fold", JSON.stringify(f)); } catch(e) {}
+  refresh();
+}
 function cardHtml(p, quotaData, benefitData) {
   var m = provMeta(p.provider);
   var chips = '<span class="chip '+m.cls+'">'+m.ch+'</span>';
@@ -230,10 +248,14 @@ function cardHtml(p, quotaData, benefitData) {
   var foot = p.is_current
     ? '<span class="curmark">'+esc(t("use_now"))+'</span>'
     : '<button class="switch-btn" data-action="switch" data-key="'+esc(p.key)+'">'+esc(t("switch_to"))+'</button>';
-  return '<div class="acct'+(p.is_current?' cur':'')+'"><div class="acct-head">'+chips
+  var folded = isFolded(p);
+  var benCount = (benefitData && benefitData.ok) ? (benefitData.count || 0) : 0;
+  return '<div class="acct'+(p.is_current?' cur':'')+(folded?' folded':'')+'"><div class="acct-head" data-action="foldhead" data-key="'+esc(p.key)+'">'+chips
     +'<span class="acct-name">'+esc(p.label)+'</span>'+tags
+    +(folded && benCount > 0 ? '<span class="tag hasben">🎁'+benCount+'</span>' : '')
+    +'<button class="chev" title="'+esc(t("mini_title"))+'" data-action="foldchev" data-key="'+esc(p.key)+'">▾</button>'
     +'<button class="acct-x" title="'+esc(t("del_title"))+'" data-action="del" data-key="'+esc(p.key)+'">✕</button></div>'
-    +'<div class="acct-body">'+buckets+'<div class="bfoot">'+benefit
+    +'<div class="acct-body'+(folded?' folded':'')+'">'+buckets+'<div class="bfoot">'+benefit
     +'<button class="mini-check" title="'+esc(t("mini_title"))+'" data-action="checkone" data-key="'+esc(p.key)+'">🔍</button>'+foot+'</div></div></div>';
 }
 
@@ -470,6 +492,9 @@ document.addEventListener("click", function(e) {
     case "cfg-opendata": invoke("open_data_dir"); break;
     case "cfg-openzdata": invoke("open_zcode_data_dir"); break;
     case "cfg-close": document.getElementById("cfgModal").style.display = "none"; break;
+    case "foldhead": case "foldchev": setFold(key, !isFolded({key: key})); break;
+    case "foldall": foldAll(true); break;
+    case "unfoldall": foldAll(false); break;
     case "switch": doSwitch(key); break;
     case "del": doDelete(key); break;
     case "checkone": checkOne(key, el); break;

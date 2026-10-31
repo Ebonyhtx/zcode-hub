@@ -52,3 +52,10 @@ npx --yes @tauri-apps/cli build --bundles nsis
 ## License
 
 [MIT](LICENSE)
+
+## Roadmap
+
+- [ ] macOS / Linux 移植（当前深度使用 Win32：DPAPI / taskkill / ShellExecuteW 等；计划公开仓库后借助免费三平台 CI 逐模块移植并验证）
+- [ ] 签名自动更新依赖公开 Release 通道
+- [ ] 多语言扩展开放
+
