@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>ZCode Hub</title>
+<style>
+:root{--bg:#0a0a14;--card:#0f0f1e;--line:#1c1c2e;--tx:#e8e8f0;--mut:#8888a0;--acc:#eab308;--ok:#22c55e;--bad:#ef4444}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--tx);font:13px/1.6 "Segoe UI",system-ui,"Noto Sans SC",sans-serif}
+.wrap{max-width:580px;margin:0 auto;padding:16px 14px 40px}
+.top{display:flex;align-items:center;justify-content:space-between;padding:0 0 14px}
+.logo{font-size:14px;font-weight:800;letter-spacing:.14em;color:#fff;font-family:ui-monospace,Consolas,monospace}
+.run-dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px;vertical-align:middle}
+.run-dot.on{background:var(--ok);box-shadow:0 0 6px var(--ok)}
+.run-dot.off{background:#555570}.run-text{font-size:11px;color:var(--mut)}
+.btn-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
+.btn{display:inline-flex;align-items:center;gap:5px;border:1px solid #252540;background:#12121f;color:var(--tx);border-radius:8px;padding:7px 13px;cursor:pointer;font-size:12.5px;font-weight:500;transition:all .15s}
+.btn:hover{border-color:#ca9a04;background:#1a1a2e}
+.btn.acc{border-color:#ca9a04;color:var(--acc);background:rgba(234,179,8,.04)}
+.btn.acc:hover{background:rgba(234,179,8,.1)}
+.section{display:flex;align-items:center;justify-content:space-between;margin:18px 0 12px}
+.section .label{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#555570;font-weight:600}
+.section .count{font-size:11px;color:var(--mut)}
+.acct{background:var(--card);border:1px solid var(--line);border-radius:12px;margin-bottom:12px;overflow:hidden;position:relative}
+.acct::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px}
+.acct.cur::before{background:var(--ok)}.acct.other::before{background:#ca9a04}
+.acct-body{padding:14px 16px}
+.acct-head{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:4px}
+.acct-name{font-size:15px;font-weight:600;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.badge{display:inline-flex;align-items:center;padding:1px 7px;border-radius:4px;font-size:10.5px;font-weight:600}
+.badge.active{background:rgba(34,197,94,.12);color:#4ade80}
+.badge.current{border:1px solid var(--acc);color:var(--acc);background:transparent;padding:5px 16px;font-size:13px;border-radius:6px;font-weight:600}
+.acct-actions{display:flex;gap:5px}
+.icon-btn{width:26px;height:26px;display:flex;align-items:center;justify-content:center;border-radius:6px;border:1px solid #252540;background:transparent;color:var(--mut);cursor:pointer;font-size:12px}
+.icon-btn:hover{color:var(--tx);border-color:#ca9a04;background:#12121f}
+.icon-btn.danger:hover{color:var(--bad);border-color:var(--bad)}
+.buckets{margin-top:8px}
+.brow{margin-bottom:8px}.brow:last-child{margin-bottom:0}
+.brow-top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px}
+.brow-model{font-size:12px;font-weight:600;color:#d0d0e0}
+.brow-pct{font-size:12px;font-weight:600;color:var(--ok)}
+.brow-pct.low{color:#ca9a04}.brow-pct.empty{color:var(--bad)}
+.brow-bar{height:6px;background:#0d0d1a;border-radius:99px;overflow:hidden}
+.brow-bar>i{display:block;height:100%;border-radius:99px}
+.brow-bar>i.ok{background:var(--ok)}.brow-bar>i.warn{background:var(--acc)}.brow-bar>i.bad{background:var(--bad)}.brow-bar>i.done{background:#334155}
+.brow-sub{display:flex;justify-content:space-between;font-size:10.5px;color:#555570;margin-top:2px}
+.switch-btn{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--acc);color:var(--acc);background:transparent;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:12.5px;font-weight:600}
+.switch-btn:hover{background:rgba(234,179,8,.08)}
+.claim-row{display:flex;align-items:center;justify-content:space-between;background:rgba(234,179,8,.03);border:1px solid rgba(234,179,8,.12);border-radius:8px;padding:7px 12px;margin-top:10px}
+.claim-info{font-size:12px;color:var(--acc)}.claim-info .model{font-weight:600}
+.claim-btn{border:1px solid var(--acc);color:var(--acc);background:rgba(234,179,8,.06);border-radius:5px;padding:3px 10px;cursor:pointer;font-size:11.5px;font-weight:600}
+.claim-btn:hover{background:rgba(234,179,8,.14)}
+.empty{text-align:center;padding:40px 20px;color:var(--mut)}
+.spin{display:inline-block;width:16px;height:16px;border:2px solid var(--acc);border-radius:50%;border-top-color:transparent;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.toasts{position:fixed;right:14px;bottom:14px;display:flex;flex-direction:column;gap:8px;z-index:99}
+.toast{background:#1a1a2e;border:1px solid var(--acc);border-radius:10px;padding:10px 16px;max-width:340px;font-size:12.5px;box-shadow:0 6px 20px rgba(0,0,0,.5)}
+.toast.ok{border-color:var(--ok)}.toast.bad{border-color:var(--bad)}
+@keyframes slideIn{from{transform:translateX(20px);opacity:0}to{transform:none;opacity:1}}
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:50;display:flex;align-items:center;justify-content:center}
+.modal-box{background:var(--card);border:1px solid #252540;border-radius:14px;padding:22px;width:380px;max-width:90vw}
+.modal-box h3{margin:0 0 10px;font-size:15px}
+.mut2{color:var(--mut);font-size:12.5px;line-height:1.6}
+</style></head><body>
+<div class="wrap">
+<div class="top"><span class="logo">ZCODE HUB</span><span style="flex:1"></span>
+<span><span class="run-dot" id="runDot"></span><span class="run-text" id="runText"></span></span></div>
+<div class="btn-row">
+<button class="btn acc" onclick="doCapture()">&#128230; 保存当前登录</button>
+<button class="btn acc" onclick="doCheck()">&#127873; 检测福利</button>
+<button class="btn" onclick="doAdd()">&#128100; 添加账号</button>
+<button class="btn" onclick="doKill()">&#9211; 关闭 ZCode</button>
+</div>
+<div class="section"><span class="label">ACCOUNTS &middot; 账号库</span><span class="count" id="profCount"></span></div>
+<div id="acctList"><div class="empty"><div class="spin"></div><br>Loading...</div></div>
+</div>
+<div class="toasts" id="toasts"></div>
+<div class="modal-overlay" id="addModal" style="display:none">
+<div class="modal-box"><h3>添加账号（官方 OAuth）</h3>
+<p class="mut2">点击下方按钮打开官方登录页面，完成登录后自动保存到账号库。</p>
+<button class="btn acc" style="width:100%;justify-content:center;padding:10px" onclick="oauthOpen()">&#127760; 打开 Z.AI 官方登录页</button>
+<div style="margin-top:10px;font-size:12px;color:var(--mut)" id="oauthStatus"></div>
+<div style="margin-top:14px;text-align:right"><button class="btn" onclick="closeAddModal()">取消</button></div>
+</div></div>
+<script>
+function tauriInvoke(cmd, args) {
+  if (window.__TAURI_INTERNALS__) return window.__TAURI_INTERNALS__.invoke(cmd, args);
+  return Promise.reject("Tauri not ready");
+}
+var invoke = tauriInvoke;
+var esc = function(s) { return String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); };
+var fmtN = function(n) { try { return Number(n).toLocaleString("en-US"); } catch(e) { return String(n); } };
+var fmtT = function(v) { if (v == null) return "?";
+  var ms = Number(v) < 1e12 ? Number(v)*1000 : Number(v);
+  var d = new Date(ms), p = function(n) { return String(n).padStart(2,"0"); };
+  return p(d.getMonth()+1)+"-"+p(d.getDate())+" "+p(d.getHours())+":"+p(d.getMinutes()); };
+function pushToast(msg, kind) {
+  var box = document.getElementById("toasts");
+  var el = document.createElement("div");
+  el.className = "toast " + (kind || "");
+  el.textContent = msg; box.appendChild(el);
+  setTimeout(function() { el.remove(); }, 6000);
+}
+window.pushToast = pushToast;
+function renderBuckets(balances) {
+  if (!Array.isArray(balances) || !balances.length) return '<div style="font-size:12px;padding:6px 0;color:#8888a0">暂无额度数据</div>';
+  return balances.map(function(b) {
+    var name = b.show_name || b.model || "?";
+    var avail = Number(b.available_units !== undefined ? b.available_units : b.remaining_units || 0);
+    var total = Number(b.total_units || 0); var used = Number(b.used_units || 0);
+    var exp = fmtT(b.expires_at || b.period_end);
+    var pct = total > 0 ? Math.round(avail/total*100) : 0;
+    var done = avail <= 0; var pctCls = done ? "empty" : (pct < 10 ? "low" : "");
+    var barCls = done ? "done" : (pct < 10 ? "bad" : (pct < 40 ? "warn" : "ok"));
+    var mark = done ? "[已用完] " : "";
+    return '<div class="brow"><div class="brow-top"><span class="brow-model">' + mark + esc(name) + '</span><span class="brow-pct ' + pctCls + '">' + pct + '%</span></div><div class="brow-bar"><i class="' + barCls + '" style="width:' + pct + '%"></i></div><div class="brow-sub"><span>剩余 ' + fmtN(avail) + ' / ' + fmtN(total) + '</span><span>已用 ' + fmtN(used) + ' &middot; ' + exp + ' 到期</span></div></div>';
+  }).join("");
+}
+function findCamps(j, d, out) {
+  if (d > 8 || !j || typeof j !== "object") return out;
+  if (Array.isArray(j)) { j.forEach(function(x) { findCamps(x, d+1, out); }); return out; }
+  var keys = Object.keys(j);
+  if (keys.some(function(k) { return ["plan_id","planId","plan_ids"].indexOf(k) !== -1; })) {
+    out.push({ title: j.title || j.name || j.plan_name || "活动", grant: j.grant_units || j.grantUnits || "?" });
+  }
+  Object.values(j).forEach(function(v) { findCamps(v, d+1, out); });
+  return out;
+}
+function renderBenefits(data) {
+  var camps = findCamps(data, 0, []);
+  if (!camps.length) return "";
+  return camps.map(function(c) {
+    return '<div class="claim-row"><span class="claim-info"><span class="model">' + esc(c.title) + '</span> &middot; ' + esc(c.grant) + ' Token</span><button class="claim-btn" onclick="doOpenClient()">&#127873; 去领取</button></div>';
+  }).join("");
+}
+function cardHtml(p, quotaData, benefitData) {
+  var isCur = p.is_current;
+  var cls = isCur ? "cur" : "other";
+  var curBadge = isCur ? '<span class="badge active">使用中</span>' : "";
+  var btn = isCur ? '<span class="badge current">当前</span>' : '<button class="switch-btn" onclick="doSwitch(\'' + esc(p.key) + '\')">⇄ 切换</button>';
+  var actions = '<div class="acct-actions"><button class="icon-btn danger" onclick="doDelete(\'' + esc(p.key) + '\')">✕</button></div>';
+  var balances = [];
+  if (quotaData && quotaData.ok) { var d = quotaData.data; if (d && d.data && d.data.balances) balances = d.data.balances; else if (d && d.balances) balances = d.balances; }
+  var buckets = quotaData && quotaData.ok ? renderBuckets(balances) : '<div style="font-size:12px;color:#f87171">' + esc(quotaData && quotaData.error || "...") + '</div>';
+  var benefits = benefitData && benefitData.ok ? renderBenefits(benefitData.data) : "";
+  return '<div class="acct ' + cls + '"><div class="acct-body"><div class="acct-head"><div><div class="acct-name">' + esc(p.label) + ' ' + curBadge + '</div></div>' + actions + '</div><div class="buckets">' + buckets + '</div>' + benefits + '<div style="margin-top:10px;text-align:right">' + btn + '</div></div></div>';
+}
+function refresh() {
+  invoke("get_state").then(function(st) {
+    document.getElementById("runDot").className = "run-dot " + (st.zcode_running ? "on" : "off");
+    document.getElementById("runText").textContent = st.zcode_running ? "ZCode 运行中" : "ZCode 未运行";
+    document.getElementById("profCount").textContent = st.profiles.length + " 个存档";
+    var list = st.profiles.length > 0 ? st.profiles : [{ key: "__current__", label: st.current_label, is_current: true }];
+    Promise.all(list.map(function(p) {
+      return Promise.all([
+        invoke("fetch_quota", { key: p.key }).catch(function(e) { return { ok: false, error: String(e) }; }),
+        invoke("fetch_benefits", { key: p.key }).catch(function(e) { return { ok: false, error: String(e) }; })
+      ]).then(function(r) { return cardHtml(p, r[0], r[1]); });
+    })).then(function(cards) { document.getElementById("acctList").innerHTML = cards.join(""); });
+  }).catch(function(e) { pushToast("refresh failed: " + e, "bad"); });
+}
+function doCapture() { invoke("capture_profile", { name: null }).then(function(r) { if (r.ok) { pushToast("saved: " + r.label, "ok"); refresh(); } else pushToast(r.error, "bad"); }); }
+function doSwitch(key) { if (!confirm("切换到该账号？ZCode 将自动关闭并重启。")) return; invoke("switch_profile", { key: key }).then(function(r) { if (r.ok) { pushToast("switched", "ok"); refresh(); } else pushToast(r.error, "bad"); }); }
+function doDelete(key) { if (!confirm("delete?")) return; invoke("delete_profile", { key: key }).then(function() { refresh(); }); }
+function doCheck() { pushToast("checking...", "");
+  invoke("get_state").then(function(st) {
+    var list = st.profiles.length > 0 ? st.profiles : [{ key: "__current__", label: "current", is_current: true }];
+    var found = 0;
+    Promise.all(list.map(function(p) { return invoke("fetch_benefits", { key: p.key }).then(function(r) {
+      if (r.ok) { var camps = findCamps(r.data, 0, []); if (camps.length) { found += camps.length; pushToast("[" + p.label + "] " + camps.length + " claimable", "ok"); } }
+    }); })).then(function() { if (found === 0) pushToast("no campaigns"); else pushToast(found + " claimable - switch & claim in client", "ok"); });
+  });
+}
+function doAdd() { document.getElementById("addModal").style.display = "flex"; document.getElementById("oauthStatus").textContent = "starting OAuth..."; invoke("oauth_start").catch(function(e) { pushToast(String(e), "bad"); }); }
+function closeAddModal() { document.getElementById("addModal").style.display = "none"; }
+function doKill() { if (!confirm("close ZCode?")) return; invoke("kill_zcode_client").then(function() { refresh(); }); }
+function doOpenClient() { invoke("open_zcode_client"); }
+window.doSwitch = doSwitch; window.doDelete = doDelete; window.doCapture = doCapture;
+window.doCheck = doCheck; window.doAdd = doAdd; window.doKill = doKill;
+window.closeAddModal = closeAddModal; window.doOpenClient = doOpenClient;
+function tryStart() { if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) { refresh(); } else { setTimeout(tryStart, 200); } }
+tryStart();
+</script></body></html>

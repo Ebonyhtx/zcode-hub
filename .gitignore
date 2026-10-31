@@ -1,0 +1,22 @@
+# Rust / Tauri build artifacts
+src-tauri/target/
+*.exe
+
+# Secrets / local state
+.env
+.env.*
+key.txt
+*.key
+*.pem
+backups/
+profiles/
+hub-config.json
+relay-check-history.jsonl
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+Thumbs.db
