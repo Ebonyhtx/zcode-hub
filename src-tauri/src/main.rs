@@ -6,7 +6,7 @@ use base64::Engine;
 use serde_json::json;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::os::windows::process::CommandExt;
 use tauri::menu::{Menu, MenuItem};
@@ -125,7 +125,7 @@ fn snap_key() -> Vec<u8> {
 
 const SNAP_MAGIC: &str = "ZH-SNAP1:";
 
-fn write_snapshot(dir: &PathBuf, v: &Value) -> Result<(), String> {
+fn write_snapshot(dir: &Path, v: &Value) -> Result<(), String> {
     let key = snap_key();
     let plain = serde_json::to_vec(v).map_err(|e| e.to_string())?;
     let iv: [u8; 12] = rand::random();
@@ -138,7 +138,7 @@ fn write_snapshot(dir: &PathBuf, v: &Value) -> Result<(), String> {
     Ok(())
 }
 
-fn read_snapshot_value(dir: &PathBuf) -> Option<Value> {
+fn read_snapshot_value(dir: &Path) -> Option<Value> {
     let snap = dir.join("credentials.snap");
     if snap.exists() {
         let txt = std::fs::read_to_string(&snap).ok()?;
@@ -471,7 +471,7 @@ static QUOTA_CACHE: Mutex<Option<std::collections::HashMap<String, (i64, Value)>
 static HTTP: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
 
 fn http() -> &'static reqwest::blocking::Client {
-    HTTP.get_or_init(|| reqwest::blocking::Client::new())
+    HTTP.get_or_init(reqwest::blocking::Client::new)
 }
 
 fn zcode_exe_path() -> Option<String> {
@@ -651,12 +651,12 @@ fn get_state() -> serde_json::Value {
     let pd = profiles_dir();
     if pd.exists() {
         let mut entries: Vec<_> = std::fs::read_dir(&pd).map(|rd| rd.filter_map(|e| e.ok()).collect()).unwrap_or_default();
-        entries.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+        entries.sort_by_key(|a| a.file_name());
         for e in entries {
             let name = e.file_name().to_string_lossy().to_string();
             let pval = read_snapshot_value(&e.path());
             if pval.is_none() { continue; }
-            let label = pval.as_ref().map(|c| account_label(c)).unwrap_or("?".into());
+            let label = pval.as_ref().map(account_label).unwrap_or("?".into());
             let meta = read_json(&e.path().join("meta.json")).ok().unwrap_or(json!({}));
             let ca = meta.get("captured_at").and_then(|v| v.as_str()).map(String::from).unwrap_or_default();
             // provider 优先取 meta.json，老存档回退到解密凭据里的 oauth:active_provider
@@ -668,7 +668,7 @@ fn get_state() -> serde_json::Value {
                     .unwrap_or_default();
             }
             let ic = !cur_label.starts_with('(') && label == cur_label;
-            let je = pval.as_ref().map(|c| jwt_expired(c)).unwrap_or(false);
+            let je = pval.as_ref().map(jwt_expired).unwrap_or(false);
             profiles.push(ProfileInfo { key: name, label, captured_at: ca, is_current: ic, provider, jwt_expired: je });
         }
     }
@@ -791,7 +791,7 @@ fn switch_profile(key: String, hot: Option<bool>) -> serde_json::Value {
         let valid_session = cur_creds.as_ref()
             .map(|c| c.get("zcodejwttoken").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false))
             .unwrap_or(false);
-        let cl = cur_creds.as_ref().map(|c| account_label(c)).unwrap_or_default();
+        let cl = cur_creds.as_ref().map(account_label).unwrap_or_default();
         let mut known_dir: Option<PathBuf> = None;
         if let Ok(rd) = std::fs::read_dir(profiles_dir()) {
             for e in rd.flatten() {
