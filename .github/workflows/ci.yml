@@ -16,3 +16,16 @@ jobs:
           workspaces: src-tauri
       - name: Run unit tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Scan full history for secrets
+        shell: bash
+        run: bash scripts/secret-scan.sh --history
+      - name: Scanner selftest
+        shell: bash
+        run: bash scripts/secret-scan.sh --selftest
