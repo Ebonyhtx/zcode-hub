@@ -1,0 +1,27 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-cli/schema.json",
+  "productName": "ZCode Hub",
+  "version": "1.0.0",
+  "identifier": "com.zcode-hub.app",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "ZCode Hub",
+        "width": 620,
+        "height": 820,
+        "minWidth": 520,
+        "minHeight": 600,
+        "resizable": true,
+        "decorations": true,
+        "transparent": false,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  }
+}
