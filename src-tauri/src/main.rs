@@ -81,7 +81,45 @@ fn v2_dir() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".zcode").join("v2")
 }
 fn cred_path() -> PathBuf { v2_dir().join(CRED_FILE) }
-fn profiles_dir() -> PathBuf { PathBuf::from("D:\\zcode-hub\\profiles") }
+
+// 标准应用数据目录：%APPDATA%\zcode-hub（换机器 / 无 D 盘也正常）
+fn app_data_dir() -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".zcode-hub"))
+        .join("zcode-hub")
+}
+
+fn profiles_dir() -> PathBuf { app_data_dir().join("profiles") }
+
+// 旧版本把数据硬编码在 D:\zcode-hub；首次启动若新位置为空则整体迁入（不删旧文件）
+fn migrate_legacy_data() {
+    let old_profiles = PathBuf::from(r"D:\zcode-hub\profiles");
+    let old_config = PathBuf::from(r"D:\zcode-hub\hub-config.json");
+    let new_profiles = profiles_dir();
+    let _ = std::fs::create_dir_all(&new_profiles);
+    let empty = std::fs::read_dir(&new_profiles).map(|rd| rd.count() == 0).unwrap_or(true);
+    if empty && old_profiles.exists() {
+        if let Ok(rd) = std::fs::read_dir(&old_profiles) {
+            for e in rd.flatten() {
+                let _ = copy_dir_all(&e.path(), new_profiles.join(e.file_name()));
+            }
+        }
+    }
+    if !config_path().exists() && old_config.exists() {
+        let _ = std::fs::copy(&old_config, config_path());
+    }
+}
+
+fn copy_dir_all(src: &PathBuf, dst: PathBuf) -> std::io::Result<()> {
+    std::fs::create_dir_all(&dst)?;
+    for e in std::fs::read_dir(src)? {
+        let e = e?;
+        let t = dst.join(e.file_name());
+        if e.path().is_dir() { copy_dir_all(&e.path(), t)?; }
+        else { std::fs::copy(e.path(), t)?; }
+    }
+    Ok(())
+}
 
 fn read_json(path: &PathBuf) -> Result<Value, String> {
     let c = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
@@ -582,7 +620,7 @@ static SETTINGS: Mutex<Option<Value>> = Mutex::new(None);
 static BENEFITS: Mutex<Option<std::collections::HashMap<String, Value>>> = Mutex::new(None);
 static LAST_CHECK: Mutex<Option<i64>> = Mutex::new(None);
 
-fn config_path() -> PathBuf { PathBuf::from("D:\\zcode-hub\\hub-config.json") }
+fn config_path() -> PathBuf { app_data_dir().join("hub-config.json") }
 
 fn load_settings() -> Value {
     let mut st = SETTINGS.lock().unwrap();
@@ -787,6 +825,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
+            migrate_legacy_data();
             *APP_HANDLE.lock().unwrap() = Some(app.handle().clone());
             setup_tray(app)?;
             let handle = app.handle().clone();
