@@ -27,6 +27,134 @@ fn safe_key(key: &str) -> Result<(), String> {
 
 fn denied(e: String) -> serde_json::Value { json!({"ok": false, "error": e}) }
 
+// ---------------- 窗口几何持久化 ----------------
+fn save_window_state(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        if let (Ok(pos), Ok(size)) = (w.outer_position(), w.outer_size()) {
+            let mut s = load_settings();
+            s["window"] = json!({"x": pos.x, "y": pos.y, "w": size.width, "h": size.height, "max": w.is_maximized().unwrap_or(false)});
+            let _ = write_json(&config_path(), &s);
+            *SETTINGS.lock().unwrap() = Some(s);
+        }
+    }
+}
+
+fn restore_window_state(app: &tauri::App) {
+    if let Some(w) = app.get_webview_window("main") {
+        let cfg = load_settings();
+        if let Some(win) = cfg.get("window") {
+            let max = win.get("max").and_then(|v| v.as_bool()).unwrap_or(false);
+            if max {
+                let _ = w.maximize();
+            } else if let (Some(x), Some(y), Some(ww), Some(hh)) = (
+                win.get("x").and_then(|v| v.as_i64()), win.get("y").and_then(|v| v.as_i64()),
+                win.get("w").and_then(|v| v.as_u64()), win.get("h").and_then(|v| v.as_u64())) {
+                use tauri::{PhysicalPosition, PhysicalSize};
+                let _ = w.set_position(PhysicalPosition::new(x as i32, y as i32));
+                let _ = w.set_size(PhysicalSize::new(ww as u32, hh as u32));
+            }
+        }
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
+// ---------------- 快照保护（DPAPI） ----------------
+// 账号快照整包加密：随机密钥经 DPAPI 绑定当前 Windows 用户+机器。
+// 快照文件被拷到别的机器/用户无法解密（区别于 ZCode 自身的可推导 fallback 方案）。
+#[repr(C)]
+struct DataBlob { cb: u32, pb: *mut u8 }
+
+#[link(name = "crypt32")]
+extern "system" {
+    fn CryptProtectData(pIn: *const DataBlob, descr: *const u16, entropy: *const DataBlob, reserved: *mut std::ffi::c_void, prompt: *mut std::ffi::c_void, flags: u32, pOut: *mut DataBlob) -> i32;
+    fn CryptUnprotectData(pIn: *const DataBlob, descr: *mut *mut u16, entropy: *const DataBlob, reserved: *mut std::ffi::c_void, prompt: *mut std::ffi::c_void, flags: u32, pOut: *mut DataBlob) -> i32;
+}
+extern "system" { fn LocalFree(h: *mut std::ffi::c_void) -> *mut std::ffi::c_void; }
+
+const DPAPI_ENTROPY: &[u8] = b"zcode-hub-snapshots-v1";
+
+fn dpapi_operate(plain: &[u8], protect: bool) -> Result<Vec<u8>, String> {
+    let inp = DataBlob { cb: plain.len() as u32, pb: plain.as_ptr() as *mut u8 };
+    let ent = DataBlob { cb: DPAPI_ENTROPY.len() as u32, pb: DPAPI_ENTROPY.as_ptr() as *mut u8 };
+    let mut out = DataBlob { cb: 0, pb: std::ptr::null_mut() };
+    let ok = unsafe {
+        if protect {
+            CryptProtectData(&inp, std::ptr::null(), &ent, std::ptr::null_mut(), std::ptr::null_mut(), 1, &mut out)
+        } else {
+            CryptUnprotectData(&inp, std::ptr::null_mut(), &ent, std::ptr::null_mut(), std::ptr::null_mut(), 1, &mut out)
+        }
+    };
+    if ok == 0 { return Err("DPAPI 调用失败".into()); }
+    let v = unsafe { std::slice::from_raw_parts(out.pb, out.cb as usize).to_vec() };
+    unsafe { LocalFree(out.pb as *mut std::ffi::c_void); }
+    Ok(v)
+}
+
+static SNAP_KEY: Mutex<Option<Vec<u8>>> = Mutex::new(None);
+
+fn snap_key() -> Vec<u8> {
+    let mut g = SNAP_KEY.lock().unwrap();
+    if let Some(k) = g.as_ref() { return k.clone(); }
+    let f = app_data_dir().join("snapkey");
+    let mut key: Vec<u8> = Vec::new();
+    if let Ok(txt) = std::fs::read_to_string(&f) {
+        if let Some(b64) = txt.trim().strip_prefix("dpapi:") {
+            let engine = base64::engine::general_purpose::STANDARD;
+            if let Ok(enc) = engine.decode(b64) {
+                if let Ok(k) = dpapi_operate(&enc, false) { key = k; }
+            }
+        }
+    }
+    if key.len() != 32 {
+        key = (0..32).map(|_| rand::random::<u8>()).collect();
+        let engine = base64::engine::general_purpose::STANDARD;
+        if let Ok(enc) = dpapi_operate(&key, true) {
+            let _ = std::fs::create_dir_all(app_data_dir());
+            let _ = std::fs::write(&f, format!("dpapi:{}", engine.encode(enc)));
+        }
+    }
+    *g = Some(key.clone());
+    key
+}
+
+const SNAP_MAGIC: &str = "ZH-SNAP1:";
+
+fn write_snapshot(dir: &PathBuf, v: &Value) -> Result<(), String> {
+    let key = snap_key();
+    let plain = serde_json::to_vec(v).map_err(|e| e.to_string())?;
+    let iv: [u8; 12] = rand::random();
+    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| e.to_string())?;
+    let ct = cipher.encrypt(Nonce::from_slice(&iv), plain.as_ref()).map_err(|e| e.to_string())?;
+    let engine = base64::engine::general_purpose::STANDARD;
+    let body = format!("{}{}.{}", SNAP_MAGIC, engine.encode(iv), engine.encode(ct));
+    std::fs::write(dir.join("credentials.snap"), body).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(dir.join(CRED_FILE)); // 旧格式副本不再保留
+    Ok(())
+}
+
+fn read_snapshot_value(dir: &PathBuf) -> Option<Value> {
+    let snap = dir.join("credentials.snap");
+    if snap.exists() {
+        let txt = std::fs::read_to_string(&snap).ok()?;
+        let body = txt.trim().strip_prefix(SNAP_MAGIC)?;
+        let engine = base64::engine::general_purpose::STANDARD;
+        let mut it = body.split('.');
+        let iv = engine.decode(it.next()?).ok()?;
+        let ct = engine.decode(it.next()?).ok()?;
+        let cipher = Aes256Gcm::new_from_slice(&snap_key()).ok()?;
+        let plain = cipher.decrypt(Nonce::from_slice(&iv), ct.as_ref()).ok()?;
+        serde_json::from_slice(&plain).ok()
+    } else {
+        let legacy = dir.join(CRED_FILE);
+        if legacy.exists() {
+            let v = read_json(&legacy).ok()?; // 旧格式快照读取时顺手升级为 DPAPI 加密
+            let _ = write_snapshot(dir, &v);
+            Some(v)
+        } else { None }
+    }
+}
+
 // 客户端 setting.json 的 providerFamilyDomain 必须 = 当前登录账号的家族（zai/bigmodel），
 // 否则账号提供商解析第一个检查就返回 null → 模型配置显示「请登录」、套餐额度不加载。
 // 交互登录时官方客户端会自己写这个字段；文件级切换/存档必须由 Hub 同步维护。
@@ -178,6 +306,12 @@ fn zcode_running() -> bool {
 // exe 路径基本不变，命中一次就缓存，避免反复拉 PowerShell
 static EXE_CACHE: Mutex<Option<String>> = Mutex::new(None);
 static APP_HANDLE: Mutex<Option<tauri::AppHandle>> = Mutex::new(None);
+static QUOTA_CACHE: Mutex<Option<std::collections::HashMap<String, (i64, Value)>>> = Mutex::new(None);
+static HTTP: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
+
+fn http() -> &'static reqwest::blocking::Client {
+    HTTP.get_or_init(|| reqwest::blocking::Client::new())
+}
 
 fn zcode_exe_path() -> Option<String> {
     if let Some(p) = EXE_CACHE.lock().unwrap().clone() { return Some(p); }
@@ -232,7 +366,6 @@ fn get_state() -> serde_json::Value {
             .and_then(|s| decrypt_value(&s).ok())
             .unwrap_or_default()
     } else { String::new() };
-    let cur_sha = std::fs::read(&cur).ok().map(|b| Sha256::digest(&b).to_vec());
     let mut profiles = Vec::new();
     let pd = profiles_dir();
     if pd.exists() {
@@ -240,20 +373,20 @@ fn get_state() -> serde_json::Value {
         entries.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
         for e in entries {
             let name = e.file_name().to_string_lossy().to_string();
-            let cp = e.path().join(CRED_FILE);
-            if !cp.exists() { continue; }
-            let label = read_json(&cp).map(|c| account_label(&c)).unwrap_or("?".into());
+            let pval = read_snapshot_value(&e.path());
+            if pval.is_none() { continue; }
+            let label = pval.as_ref().map(|c| account_label(c)).unwrap_or("?".into());
             let meta = read_json(&e.path().join("meta.json")).ok().unwrap_or(json!({}));
             let ca = meta.get("captured_at").and_then(|v| v.as_str()).map(String::from).unwrap_or_default();
             // provider 优先取 meta.json，老存档回退到解密凭据里的 oauth:active_provider
             let mut provider = meta.get("provider").and_then(|v| v.as_str()).unwrap_or("").to_string();
             if provider.is_empty() {
-                provider = read_json(&cp).ok()
+                provider = pval.as_ref()
                     .and_then(|c| c.get("oauth:active_provider").and_then(|v| v.as_str()).map(String::from))
                     .and_then(|s| decrypt_value(&s).ok())
                     .unwrap_or_default();
             }
-            let ic = std::fs::read(&cp).ok().map(|b| Sha256::digest(&b).to_vec()).map(|h| Some(h) == cur_sha).unwrap_or(false);
+            let ic = !cur_label.starts_with('(') && label == cur_label;
             profiles.push(ProfileInfo { key: name, label, captured_at: ca, is_current: ic, provider });
         }
     }
@@ -280,7 +413,7 @@ fn capture_profile(name: Option<String>) -> serde_json::Value {
     while profiles_dir().join(&fname).exists() { fname = format!("{}-{}", safe, i); i += 1; }
     let dd = profiles_dir().join(&fname);
     let _ = std::fs::create_dir_all(&dd);
-    let _ = std::fs::copy(&src, dd.join(CRED_FILE));
+    let _ = write_snapshot(&dd, &creds);
     let provider = creds.get("oauth:active_provider").and_then(|v| v.as_str())
         .and_then(|s| decrypt_value(s).ok()).unwrap_or_default();
     let _ = write_json(&dd.join("meta.json"), &json!({"label": label, "provider": provider, "captured_at": chrono::Utc::now().to_rfc3339()}));
@@ -290,8 +423,8 @@ fn capture_profile(name: Option<String>) -> serde_json::Value {
 #[tauri::command]
 fn switch_profile(key: String) -> serde_json::Value {
     if let Err(e) = safe_key(&key) { return denied(e); }
-    let prof = profiles_dir().join(&key).join(CRED_FILE);
-    if !prof.exists() { return json!({"ok": false, "error": format!("'{}' 不存在", key)}); }
+    let prof_dir = profiles_dir().join(&key);
+    let prof_v = match read_snapshot_value(&prof_dir) { Some(v) => v, None => return json!({"ok": false, "error": format!("'{}' 不存在", key)}) };
     let cur = cred_path();
     let exe = zcode_exe_path();
     let was = zcode_running();
@@ -313,28 +446,26 @@ fn switch_profile(key: String) -> serde_json::Value {
         let mut known = false;
         if let Ok(rd) = std::fs::read_dir(profiles_dir()) {
             for e in rd.flatten() {
-                let cp = e.path().join(CRED_FILE);
-                if cp.exists() && read_json(&cp).map(|c| account_label(&c)) == Ok(cl.clone()) { known = true; break; }
+                if read_snapshot_value(&e.path()).map(|c| account_label(&c)) == Some(cl.clone()) { known = true; break; }
             }
         }
         if !known && valid_session {
             let auto = format!("autosave-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
             let _ = std::fs::create_dir_all(profiles_dir().join(&auto));
-            let _ = std::fs::copy(&cur, profiles_dir().join(&auto).join(CRED_FILE));
+            if let Some(cv) = cur_creds.as_ref() { let _ = write_snapshot(&profiles_dir().join(&auto), cv); }
             let _ = write_json(&profiles_dir().join(&auto).join("meta.json"), &json!({"label": cl, "captured_at": chrono::Utc::now().to_rfc3339()}));
         }
         if valid_session {
             let _ = std::fs::copy(&cur, v2_dir().join("credentials.json.hub-backup"));
         }
     }
-    if std::fs::copy(&prof, &cur).is_err() {
+    if write_json(&cur, &prof_v).is_err() {
         let _ = std::fs::copy(v2_dir().join("credentials.json.hub-backup"), &cur);
         return json!({"ok": false, "error": "替换凭据文件失败，已恢复原文件"});
     }
     // 同步客户端激活家族，否则模型配置/套餐解析会因 domain 不匹配而「请登录」
-    let fam = read_json(&cur).ok()
-        .and_then(|c| c.get("oauth:active_provider").and_then(|v| v.as_str()).map(String::from))
-        .and_then(|s| decrypt_value(&s).ok())
+    let fam = prof_v.get("oauth:active_provider").and_then(|v| v.as_str())
+        .and_then(|s| decrypt_value(s).ok())
         .unwrap_or_default();
     sync_provider_family_domain(&fam);
     let rel = if was { exe.as_ref().map(|e| launch_zcode_process(e)).unwrap_or(false) } else { false };
@@ -512,7 +643,7 @@ fn _oauth_worker(provider: String, poll_token: String) {
         let safe: String = label.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '@' { c } else { '_' }).collect();
         let prof_dir = profiles_dir().join(&safe);
         let _ = std::fs::create_dir_all(&prof_dir);
-        write_json(&prof_dir.join(CRED_FILE), &serde_json::to_value(&encrypted).unwrap_or(json!({}))).ok();
+        let _ = write_snapshot(&prof_dir, &serde_json::to_value(&encrypted).unwrap_or(json!({})));
         let _ = write_json(&prof_dir.join("meta.json"), &json!({"label": label, "provider": provider, "captured_at": chrono::Utc::now().to_rfc3339()}));
         sync_provider_family_domain(&provider);
         set_oauth(json!({"status":"ready","label": label, "provider": provider, "name": safe, "warning": warning}));
@@ -569,27 +700,36 @@ fn oauth_open() -> serde_json::Value {
 }
 
 fn _get_jwt_token(key: &str) -> Result<String, String> {
-    let cp = if key == "__current__" { cred_path() } else { profiles_dir().join(key).join(CRED_FILE) };
-    if !cp.exists() { return Err("profile not found".into()); }
-    let creds = read_json(&cp)?;
+    let creds = if key == "__current__" {
+        read_json(&cred_path())?
+    } else {
+        read_snapshot_value(&profiles_dir().join(key)).ok_or("profile not found")?
+    };
     let raw = creds.get("zcodejwttoken").and_then(|v| v.as_str()).ok_or("no jwt")?;
     decrypt_value(raw)
 }
 
 #[tauri::command]
-fn fetch_quota(key: String) -> serde_json::Value {
+fn fetch_quota(key: String, force: Option<bool>) -> serde_json::Value {
     if let Err(e) = safe_key(&key) { return denied(e); }
+    let now = chrono::Utc::now().timestamp();
+    if !force.unwrap_or(false) {
+        if let Some(map) = QUOTA_CACHE.lock().unwrap().as_ref() {
+            if let Some((ts, v)) = map.get(&key) { if now - ts < 90 { return v.clone(); } }
+        }
+    }
     let token = match _get_jwt_token(&key) { Ok(t) => t, Err(e) => return json!({"ok": false, "error": e}) };
     let mid = telemetry_device_mid();
-    let client = reqwest::blocking::Client::new();
-    match client.get("https://zcode.z.ai/api/v1/zcode-plan/billing/balance")
+    let resp = match http().get("https://zcode.z.ai/api/v1/zcode-plan/billing/balance")
         .header("Authorization", format!("Bearer {}", token))
         .header("X-Device-Mid", &mid).header("X-Client-Language", "zh-CN")
         .header("X-ZCode-App-Version", "3.17.1")
         .timeout(std::time::Duration::from_secs(30)).send() {
         Ok(r) => match r.json::<Value>() { Ok(j) => json!({"ok": true, "data": j}), Err(e) => json!({"ok": false, "error": e.to_string()}) },
         Err(e) => json!({"ok": false, "error": e.to_string()}),
-    }
+    };
+    QUOTA_CACHE.lock().unwrap().get_or_insert_with(Default::default).insert(key, (now, resp.clone()));
+    resp
 }
 
 // 自绘标题栏的窗口控制（decorations:false 后由前端按钮调用）
@@ -801,7 +941,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     let h = app.clone();
                     std::thread::spawn(move || _check_all_and_notify(&h));
                 }
-                "quit" => { app.exit(0); }
+                "quit" => { save_window_state(app); app.exit(0); }
                 _ => {}
             }
         })
@@ -828,12 +968,14 @@ pub fn run() {
             migrate_legacy_data();
             *APP_HANDLE.lock().unwrap() = Some(app.handle().clone());
             setup_tray(app)?;
+            restore_window_state(app);
             let handle = app.handle().clone();
             std::thread::spawn(move || _auto_check_loop(handle));
             Ok(())
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                save_window_state(window.app_handle());
                 window.hide().unwrap();
                 api.prevent_close();
             }
