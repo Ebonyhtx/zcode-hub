@@ -27,6 +27,11 @@ fn safe_key(key: &str) -> Result<(), String> {
 
 fn denied(e: String) -> serde_json::Value { json!({"ok": false, "error": e}) }
 
+// 账号目录名清洗：白名单字符外全部替换为下划线（capture / OAuth 建档 / 导入共用）
+fn sanitize_label(s: &str) -> String {
+    s.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '@' { c } else { '_' }).collect()
+}
+
 // ---------------- 窗口几何持久化 ----------------
 fn save_window_state(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
@@ -686,7 +691,7 @@ fn capture_profile(name: Option<String>) -> serde_json::Value {
     let creds = match read_json(&src) { Ok(c) => c, Err(e) => return json!({"ok": false, "error": e}) };
     let label = account_label(&creds);
     let base = name.unwrap_or_else(|| label.clone());
-    let safe: String = base.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+    let safe = sanitize_label(&base);
     let mut fname = safe.clone();
     let mut i = 2;
     while profiles_dir().join(&fname).exists() { fname = format!("{}-{}", safe, i); i += 1; }
@@ -907,7 +912,7 @@ fn import_bundle(path: String, password: String) -> serde_json::Value {
             if !has_jwt { skipped += 1; continue; }
             let label = a.get("label").and_then(|v| v.as_str()).unwrap_or("imported").to_string();
             let provider = a.get("provider").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let safe: String = label.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '@' { c } else { '_' }).collect();
+            let safe = sanitize_label(&label);
             let dir = profiles_dir().join(&safe);
             if dir.exists() { skipped += 1; continue; }
             let _ = std::fs::create_dir_all(&dir);
@@ -1088,7 +1093,7 @@ fn _oauth_worker(provider: String, poll_token: String) {
         }
         encrypted.insert(format!("oauth:{}:user_info", provider), encrypt_value(&profile_norm.to_string()));
         encrypted.insert("zcodejwttoken".to_string(), encrypt_value(&token));
-        let safe: String = label.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '@' { c } else { '_' }).collect();
+        let safe = sanitize_label(&label);
         let prof_dir = profiles_dir().join(&safe);
         let _ = std::fs::create_dir_all(&prof_dir);
         let _ = write_snapshot(&prof_dir, &serde_json::to_value(&encrypted).unwrap_or(json!({})));
@@ -1221,6 +1226,36 @@ fn load_settings() -> Value {
     st.clone().unwrap()
 }
 
+// 官方 preview 响应 → 福利条目（纯函数，可单测）
+fn parse_preview_plans(j: &Value) -> Vec<Value> {
+    let mut camps = Vec::new();
+    if let Some(plans) = j.pointer("/data/plans").and_then(|v| v.as_array()) {
+        for p in plans {
+            let name = p.get("name").and_then(|v| v.as_str()).map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .or_else(|| p.get("plan_id").and_then(|v| v.as_str()).map(String::from))
+                .unwrap_or_else(|| "未命名福利".into());
+            let mut grant: i64 = 0;
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(ents) = p.get("entitlements").and_then(|v| v.as_array()) {
+                for e in ents {
+                    let units = e.get("grant_units").and_then(|v| v.as_i64()).unwrap_or(0);
+                    grant += units;
+                    if let Some(sn) = e.get("show_name").and_then(|v| v.as_str()) {
+                        if !sn.is_empty() { parts.push(format!("{} +{}", sn, units)); }
+                    }
+                }
+            }
+            camps.push(json!({
+                "title": name,
+                "grant": if grant > 0 { grant.to_string() } else { "?".to_string() },
+                "detail": parts.join(" / ")
+            }));
+        }
+    }
+    camps
+}
+
 // 官方「可领取预览」：GET /api/v1/zcode-plan/billing/preview —— 客户端领取弹窗同源接口，
 // 返回 data.plans[]（每个含 plan_id/name/entitlements[grant_units]）。空数组 = 当前无可领。
 // 注意：429 限流存在，批量检测时逐账号间加间隔。
@@ -1247,31 +1282,7 @@ fn _benefits_key_result(key: &str) -> Value {
         let msg = j.get("msg").and_then(|m| m.as_str()).unwrap_or("preview error");
         return json!({"ok": false, "error": msg, "count": 0, "campaigns": [], "checked_at": ts});
     }
-    let mut camps = Vec::new();
-    if let Some(plans) = j.pointer("/data/plans").and_then(|v| v.as_array()) {
-        for p in plans {
-            let name = p.get("name").and_then(|v| v.as_str()).map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .or_else(|| p.get("plan_id").and_then(|v| v.as_str()).map(String::from))
-                .unwrap_or_else(|| "未命名福利".into());
-            let mut grant: i64 = 0;
-            let mut parts: Vec<String> = Vec::new();
-            if let Some(ents) = p.get("entitlements").and_then(|v| v.as_array()) {
-                for e in ents {
-                    let units = e.get("grant_units").and_then(|v| v.as_i64()).unwrap_or(0);
-                    grant += units;
-                    if let Some(sn) = e.get("show_name").and_then(|v| v.as_str()) {
-                        if !sn.is_empty() { parts.push(format!("{} +{}", sn, units)); }
-                    }
-                }
-            }
-            camps.push(json!({
-                "title": name,
-                "grant": if grant > 0 { grant.to_string() } else { "?".to_string() },
-                "detail": parts.join(" / ")
-            }));
-        }
-    }
+    let camps = parse_preview_plans(&j);
     json!({"ok": true, "count": camps.len(), "campaigns": camps, "checked_at": ts})
 }
 
@@ -1332,7 +1343,15 @@ fn set_settings(minutes: i64, notify_enabled: Option<bool>, zcode_path: Option<S
     s["notify_enabled"] = json!(notify_enabled.unwrap_or(true));
     if let Some(h) = hot_switch { s["hot_switch"] = json!(h); }
     let zp = zcode_path.map(|p| p.trim().trim_matches('"').to_string()).unwrap_or_default();
-    if zp.is_empty() { s["zcode_path"] = json!(null); } else { s["zcode_path"] = json!(zp); }
+    if zp.is_empty() {
+        s["zcode_path"] = json!(null);
+        *EXE_CACHE.lock().unwrap() = None;
+    } else if std::path::Path::new(&zp).exists() {
+        s["zcode_path"] = json!(zp);
+        *EXE_CACHE.lock().unwrap() = None;
+    } else {
+        return json!({"ok": false, "error": format!("路径不存在: {}", zp)});
+    }
     let _ = write_json(&config_path(), &s);
     *SETTINGS.lock().unwrap() = Some(s);
     *LAST_CHECK.lock().unwrap() = None; // 保存后立即按新周期跑一轮
@@ -1516,6 +1535,57 @@ mod tests {
         let c = bundle_key("password2", &salt);
         assert_eq!(a, b);
         assert_ne!(a, c);
+    }
+
+    #[test]
+    fn parse_preview_plans_extracts_benefits() {
+        let j = json!({"code": 0, "data": {"plans": [
+            {"plan_id": "p1", "name": "周末福利", "entitlements": [
+                {"show_name": "GLM-5.3-Flash", "grant_units": 500000000}]},
+            {"plan_id": "p2", "entitlements": []},
+            {"name": "  ", "plan_id": "p3"}
+        ]}});
+        let camps = parse_preview_plans(&j);
+        assert_eq!(camps.len(), 3);
+        assert_eq!(camps[0]["title"], "周末福利");
+        assert_eq!(camps[0]["grant"], "500000000");
+        assert_eq!(camps[0]["detail"], "GLM-5.3-Flash +500000000");
+        assert_eq!(camps[1]["title"], "p2");          // 无 name → 回退 plan_id
+        assert_eq!(camps[1]["grant"], "?");            // 无权益 → ?
+        assert_eq!(camps[2]["title"], "p3");          // 空白 name → 回退
+        // 空响应
+        assert_eq!(parse_preview_plans(&json!({"code": 0})).len(), 0);
+    }
+
+    #[test]
+    fn sanitize_label_whitelists_chars() {
+        assert_eq!(sanitize_label("a b/c"), "a_b_c");
+        assert_eq!(sanitize_label("user@mail.com"), "user@mail.com");
+        assert_eq!(sanitize_label("../.."), ".._.."); // 点保留、斜杠替换
+    }
+
+    #[test]
+    fn write_json_read_json_roundtrip() {
+        let dir = std::env::temp_dir().join("zhb-test-roundtrip");
+        let _ = std::fs::create_dir_all(&dir);
+        let p = dir.join("t.json");
+        let v = json!({"k": [1, 2, {"zh": "中文"}]});
+        write_json(&p, &v).unwrap();
+        assert_eq!(read_json(&p).unwrap(), v);
+        // 原子写不应残留临时文件
+        assert!(!dir.join("t.hub-tmp").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hot_swap_verified_roundtrip() {
+        let dir = std::env::temp_dir().join("zhb-test-hotswap");
+        let _ = std::fs::create_dir_all(&dir);
+        let p = dir.join("live.json");
+        let v = json!({"zcodejwttoken": "x.y.z", "k": 1});
+        assert!(hot_swap_verified(&p, &v));
+        assert_eq!(read_json(&p).unwrap(), v);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
