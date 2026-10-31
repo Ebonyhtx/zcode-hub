@@ -12,6 +12,7 @@ var I18N = {
     unknown: "未知", current: "当前", expired: "已过期", not_checked: "🔎 未检测", ben_none: "✓ 无待领福利", ben_has: "🎁 {n} 个待领福利", ben_fail: "⚠ 检测失败: {e}",
     claim: "去领取", use_now: "✓ 当前使用中", switch_to: "⇄ 切换到此账号", del_title: "删除存档", fold_all: "全部收起", expand_all: "全部展开", mini_title: "只检测这个账号的福利",
     no_quota: "暂无额度数据", quota_fail: "获取失败", used_up: "已用完", remain: " 剩余", total: "总 ", used: " · 已用 ", expires: " 到期",
+    exp_soon: "⏰ {h} 小时后到期", exp_lt1h: "⏰ 不到 1 小时后到期", exptag_tip: "有额度将在 24 小时内到期",
     week_plan: "周末福利", base_plan: "基础套餐", other_plan: "其他",
     add_title: "添加账号", add_sub: "选择账号类型，浏览器完成官方登录后自动存入账号库。",
     zai_name: "Z.AI 账号", zai_desc: "chat.z.ai · Start Plan / Coding Plan",
@@ -54,6 +55,7 @@ var I18N = {
     unknown: "Unknown", current: "Current", expired: "Expired", not_checked: "🔎 Not checked", ben_none: "✓ Nothing to claim", ben_has: "🎁 {n} claimable", ben_fail: "⚠ Check failed: {e}",
     claim: "Claim", use_now: "✓ In use", switch_to: "⇄ Switch to this", del_title: "Delete snapshot", fold_all: "Collapse all", expand_all: "Expand all", mini_title: "Check this account only",
     no_quota: "No quota data", quota_fail: "Fetch failed", used_up: "Used up", remain: " left", total: "Total ", used: " · used ", expires: " expires",
+    exp_soon: "⏰ expires in {h}h", exp_lt1h: "⏰ expires in <1h", exptag_tip: "Some quota expires within 24h",
     week_plan: "Weekend bonus", base_plan: "Base plan", other_plan: "Other",
     add_title: "Add account", add_sub: "Pick a provider, finish official login in browser, saved automatically.",
     zai_name: "Z.AI account", zai_desc: "chat.z.ai · Start Plan / Coding Plan",
@@ -182,6 +184,24 @@ function planTag(plans, planId) {
   if (/start.?plan/i.test(nm)) return t("base_plan");
   return (p && p.name) || "";
 }
+/* 即将到期：剩余额度 >0 且 24h 内到期时高亮；≤6h 升级为红色 */
+var EXPIRE_SOON_H = 24, EXPIRE_URGENT_H = 6;
+function bucketAvail(b) { return Number(b.available_units !== undefined ? b.available_units : b.remaining_units || 0); }
+function bucketRemainH(b) {
+  var exp = Number(b.expires_at || b.period_end || 0);
+  if (!exp) return null;
+  if (exp < 1e12) exp *= 1000;
+  return (exp - Date.now()) / 3600000;
+}
+function soonestExpireH(balances) {
+  var m = null;
+  (balances || []).forEach(function (b) {
+    if (bucketAvail(b) <= 0) return;
+    var h = bucketRemainH(b);
+    if (h !== null && h <= EXPIRE_SOON_H && (m === null || h < m)) m = h;
+  });
+  return m;
+}
 function renderBuckets(balances, plans) {
   if (!Array.isArray(balances) || !balances.length) return '<div style="font-size:12px;padding:4px 0;color:var(--faint)">' + esc(t("no_quota")) + '</div>';
   var groups = {}, order = [];
@@ -195,12 +215,18 @@ function renderBuckets(balances, plans) {
   return order.map(function(key) {
     var rows = groups[key].map(function(b) {
       var name = b.show_name || b.model || "?";
-      var avail = Number(b.available_units !== undefined ? b.available_units : b.remaining_units || 0);
+      var avail = bucketAvail(b);
       var total = Number(b.total_units || 0); var used = Number(b.used_units || 0);
       var exp = b.expires_at || b.period_end;
       var pct = total > 0 ? Math.round(avail/total*100) : 0;
       var done = avail <= 0; var cls = done ? "done" : (pct < 10 ? "bad" : (pct < 40 ? "warn" : "ok"));
-      return '<div class="brow"><div class="brow-top"><span class="brow-model">'+esc(name)+'</span><span class="brow-nums num">'+ (done?esc(t("used_up")):fmtQ(avail)+esc(t("remain"))) +'</span><span class="brow-pct num" style="color:'+(done?'var(--faint)':pct<10?'var(--bad)':pct<40?'var(--acc2)':'var(--ok)')+'">'+pct+'%</span></div><div class="bar"><i class="'+cls+'" style="width:'+(done?100:pct)+'%"></i></div><div class="brow-sub"><span>'+esc(t("total"))+fmtQ(total)+(used?esc(t("used"))+fmtQ(used):'')+'</span><span class="num">'+(exp?fmtT2(exp)+esc(t("expires")):'')+'</span></div></div>';
+      var remainH = done ? null : bucketRemainH(b);
+      var expTxt = exp ? fmtT2(exp) + esc(t("expires")) : "";
+      if (remainH !== null && remainH <= EXPIRE_SOON_H) {
+        var lbl = remainH < 1 ? esc(t("exp_lt1h")) : esc(t("exp_soon", { h: Math.ceil(remainH) }));
+        expTxt = '<span class="expsoon' + (remainH <= EXPIRE_URGENT_H ? ' expbad' : '') + '" title="' + esc(fmtT2(exp)) + '">' + lbl + '</span>';
+      }
+      return '<div class="brow"><div class="brow-top"><span class="brow-model">'+esc(name)+'</span><span class="brow-nums num">'+ (done?esc(t("used_up")):fmtQ(avail)+esc(t("remain"))) +'</span><span class="brow-pct num" style="color:'+(done?'var(--faint)':pct<10?'var(--bad)':pct<40?'var(--acc2)':'var(--ok)')+'">'+pct+'%</span></div><div class="bar"><i class="'+cls+'" style="width:'+(done?100:pct)+'%"></i></div><div class="brow-sub"><span>'+esc(t("total"))+fmtQ(total)+(used?esc(t("used"))+fmtQ(used):'')+'</span><span class="num">'+expTxt+'</span></div></div>';
     }).join("");
     var week = key === t("week_plan") ? " week" : "";
     return '<div class="pgroup"><div class="plabel'+week+'">'+esc(key)+'</div>'+rows+'</div>';
@@ -244,6 +270,7 @@ function cardHtml(p, quotaData, benefitData) {
     + (p.jwt_expired ? '<span class="tag expired">⚠ '+esc(t("expired"))+'</span>' : '');
   var balances = [], plans = [];
   if (quotaData && quotaData.ok) { var d = quotaData.data; if (d && d.data) { balances = d.data.balances || []; plans = d.data.plans || []; } }
+  var expH = (quotaData && quotaData.ok) ? soonestExpireH(balances) : null;
   var buckets = quotaData && quotaData.ok ? renderBuckets(balances, plans)
     : '<div style="font-size:11.5px;color:var(--bad);padding:2px 0">'+esc(quotaData && quotaData.error || t("quota_fail"))+'</div>';
   var benefit = renderBenefitState(benefitData);
@@ -255,6 +282,7 @@ function cardHtml(p, quotaData, benefitData) {
   return '<div class="acct'+(p.is_current?' cur':'')+(folded?' folded':'')+'"><div class="acct-head" data-action="foldhead" data-key="'+esc(p.key)+'">'+chips
     +'<span class="acct-name">'+esc(p.label)+'</span>'+tags
     +(folded && benCount > 0 ? '<span class="tag hasben">🎁'+benCount+'</span>' : '')
+    +(folded && expH !== null ? '<span class="tag exptag'+(expH <= EXPIRE_URGENT_H ? ' expbad' : '')+'" title="'+esc(t("exptag_tip"))+'">⏰</span>' : '')
     +'<button class="chev" title="'+esc(t("mini_title"))+'" data-action="foldchev" data-key="'+esc(p.key)+'">▾</button>'
     +'<button class="acct-x" title="'+esc(t("del_title"))+'" data-action="del" data-key="'+esc(p.key)+'">✕</button></div>'
     +'<div class="acct-body'+(folded?' folded':'')+'">'+buckets+'<div class="bfoot">'+benefit
