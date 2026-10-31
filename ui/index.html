@@ -1,568 +1,82 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><title>ZCode Hub</title>
-<style>
-:root{
-  --bg1:#f6f7fa;--bg2:#eef0f5;
-  --card:#ffffff;--card2:#fbfbfd;
-  --line:#e7e9f0;--line2:#d9dce6;
-  --tx:#1d2130;--mut:#5f6879;--faint:#9aa1b2;
-  --acc:#a16207;--acc2:#b45309;--accbg:rgba(180,120,10,.07);--accbd:rgba(180,120,10,.35);
-  --ok:#16a34a;--okbg:rgba(22,163,74,.08);
-  --bad:#dc2626;--badbg:rgba(220,38,38,.07);
-  --zai:#2563eb;--bm:#7c3aed;
-  --bar-ok:linear-gradient(90deg,#22c55e,#16a34a);
-  --bar-warn:linear-gradient(90deg,#d97706,#f59e0b);
-  --bar-bad:linear-gradient(90deg,#dc2626,#ef4444);
-  --bar-done:#c3c9d6;
-  --hov:rgba(20,30,60,.06);
-  --shadow:0 14px 40px -22px rgba(30,40,80,.35);
-}
-body[data-theme="dark"]{
-  --bg1:#0c0d13;--bg2:#101118;
-  --card:#15161f;--card2:#191a25;
-  --line:#232434;--line2:#2e3044;
-  --tx:#e8e8f2;--mut:#8b8ba3;--faint:#5c5e74;
-  --acc:#eab308;--acc2:#facc15;--accbg:rgba(234,179,8,.07);--accbd:rgba(234,179,8,.4);
-  --ok:#3fb950;--okbg:rgba(63,185,80,.09);
-  --bad:#f85149;--badbg:rgba(248,81,73,.09);
-  --zai:#58a6ff;--bm:#a78bfa;
-  --bar-ok:linear-gradient(90deg,#2ea043,#3fb950);
-  --bar-warn:linear-gradient(90deg,#b8860b,#eab308);
-  --bar-bad:linear-gradient(90deg,#b62524,#f85149);
-  --bar-done:#2c2c44;
-  --hov:rgba(200,210,255,.07);
-  --shadow:0 14px 40px -22px rgba(0,0,0,.8);
-}
-*{box-sizing:border-box;margin:0;padding:0}
-html,body{height:100%;overflow:hidden}
-body{display:flex;flex-direction:column;background:linear-gradient(180deg,var(--bg1),var(--bg2));color:var(--tx);font:13px/1.6 "Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI",system-ui,sans-serif;-webkit-font-smoothing:antialiased;box-shadow:inset 0 0 0 1px var(--line);transition:background .25s,color .25s}
-::-webkit-scrollbar{width:9px}::-webkit-scrollbar-thumb{background:var(--line2);border-radius:99px;border:2px solid transparent;background-clip:content-box}::-webkit-scrollbar-track{background:transparent}
-
-/* ---------- 自绘标题栏 ---------- */
-.tbar{flex:none;height:42px;display:flex;align-items:center;gap:9px;padding-left:16px;user-select:none;z-index:30}
-.tbar .logo{font-size:12.5px;font-weight:800;letter-spacing:.18em;font-family:ui-monospace,Consolas,monospace;color:var(--tx)}
-.tbar .logo::first-letter{color:var(--acc2)}
-.tbar .logo em{font-style:normal;color:var(--acc2)}
-.pill{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--mut);border:1px solid var(--line2);border-radius:99px;padding:2.5px 10px;background:var(--card)}
-.dot{width:7px;height:7px;border-radius:50%;background:#b6bac6}
-body[data-theme="dark"] .dot{background:#4a4a66}
-.dot.on{background:var(--ok);box-shadow:0 0 8px rgba(22,163,74,.55)}
-.tspacer{flex:1;align-self:stretch}
-.hbtn{width:30px;height:28px;display:flex;align-items:center;justify-content:center;border:none;background:transparent;border-radius:7px;color:var(--mut);cursor:pointer;font-size:13px;transition:.15s}
-.hbtn:hover{background:var(--hov);color:var(--tx)}
-.hbtn.spin i{animation:rot .8s linear infinite;display:inline-block}
-@keyframes rot{to{transform:rotate(360deg)}}
-.wbtn{width:44px;height:44px;display:flex;align-items:center;justify-content:center;border:none;background:transparent;color:var(--mut);cursor:pointer;font-size:11px;transition:.12s;margin-right:-1px}
-.wbtn:hover{background:var(--hov);color:var(--tx)}
-.wbtn.close:hover{background:#e81123;color:#fff}
-.wbtn svg{width:10px;height:10px;stroke:currentColor;stroke-width:1.4;fill:none}
-
-/* ---------- layout ---------- */
-.wrap{flex:1;width:100%;max-width:620px;margin:0 auto;padding:8px 16px 0;display:flex;flex-direction:column;min-height:0}
-.wrap>*{flex:none}
-#acctList{flex:1;overflow-y:auto;min-height:0;padding:2px 2px 14px}
-.num{font-variant-numeric:tabular-nums}
-.btnrow{display:flex;gap:8px;margin-bottom:12px}
-.btn{flex:1;display:inline-flex;align-items:center;justify-content:center;gap:6px;border:1px solid var(--line2);background:var(--card);color:var(--tx);border-radius:10px;padding:8px 6px;cursor:pointer;font-size:12.5px;font-weight:550;transition:.15s;box-shadow:0 1px 2px rgba(20,30,60,.04)}
-.btn:hover{border-color:#b9bfd0;transform:translateY(-1px);box-shadow:0 4px 12px -6px rgba(30,40,80,.25)}
-body[data-theme="dark"] .btn:hover{border-color:#3c3e58;box-shadow:0 4px 12px -6px rgba(0,0,0,.6)}
-.btn:disabled{opacity:.45;cursor:default;transform:none}
-.btn.warn:hover{border-color:var(--bad);color:var(--bad)}
-
-/* ---------- settings ---------- */
-.setcard{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:10px 14px;margin-bottom:14px;box-shadow:var(--shadow)}
-.setrow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.setrow .lbl{font-size:12.5px;color:var(--tx);font-weight:600;display:flex;align-items:center;gap:6px}
-select{background:var(--card2);color:var(--tx);border:1px solid var(--line2);border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer;outline:none;transition:.15s}
-select:hover{border-color:#b9bfd0}
-body[data-theme="dark"] select:hover{border-color:#3c3e58}
-.tgl{position:relative;width:34px;height:19px;cursor:pointer;flex:none}
-.tgl input{display:none}
-.tgl i{position:absolute;inset:0;background:#c9cedb;border-radius:99px;transition:.2s}
-body[data-theme="dark"] .tgl i{background:#2e3044}
-.tgl i::after{content:"";position:absolute;left:2px;top:2px;width:15px;height:15px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:.2s}
-.tgl input:checked+i{background:var(--acc2)}
-.tgl input:checked+i::after{transform:translateX(15px)}
-.mut{font-size:11px;color:var(--faint)}
-.chkbtn{margin-left:auto;border:1px solid var(--accbd);background:var(--accbg);color:var(--acc2);border-radius:9px;padding:5px 14px;cursor:pointer;font-size:11.5px;font-weight:650;transition:.15s;white-space:nowrap}
-.chkbtn:hover{filter:brightness(1.06)}
-.chkbtn:disabled{opacity:.55;cursor:default}
-
-/* ---------- section ---------- */
-.sec{display:flex;align-items:baseline;gap:8px;margin:0 2px 10px}
-.sec .t{font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--faint);font-weight:700}
-.sec .c{font-size:11px;color:var(--faint)}
-
-/* ---------- account card ---------- */
-.acct{background:var(--card);border:1px solid var(--line);border-radius:14px;margin-bottom:10px;overflow:hidden;position:relative;transition:border-color .2s,box-shadow .2s;box-shadow:0 1px 3px rgba(20,30,60,.05)}
-.acct.cur{border-color:rgba(22,163,74,.4);box-shadow:0 0 0 1px rgba(22,163,74,.14),var(--shadow)}
-.acct-head{display:flex;align-items:center;gap:9px;padding:11px 14px 9px}
-.chip{width:30px;height:30px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;flex:none}
-.chip.zai{background:rgba(37,99,235,.1);color:var(--zai);border:1px solid rgba(37,99,235,.28)}
-.chip.bm{background:rgba(124,58,237,.1);color:var(--bm);border:1px solid rgba(124,58,237,.28)}
-.chip.q{background:var(--card2);color:var(--faint);border:1px solid var(--line2)}
-body[data-theme="dark"] .chip.zai{background:rgba(88,166,255,.13);border-color:rgba(88,166,255,.3)}
-body[data-theme="dark"] .chip.bm{background:rgba(167,139,250,.13);border-color:rgba(167,139,250,.3)}
-.acct-name{font-size:13.5px;font-weight:650;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.tag{flex:none;font-size:10px;font-weight:700;border-radius:5px;padding:2px 6px}
-.tag.zai{background:rgba(37,99,235,.09);color:var(--zai)}
-.tag.bm{background:rgba(124,58,237,.09);color:var(--bm)}
-.tag.cur{background:var(--okbg);color:var(--ok)}
-.tag.unk{background:var(--card2);color:var(--faint)}
-body[data-theme="dark"] .tag.zai{background:rgba(88,166,255,.12)}
-body[data-theme="dark"] .tag.bm{background:rgba(167,139,250,.12)}
-.acct-x{margin-left:auto;width:24px;height:24px;border:none;background:transparent;color:var(--faint);cursor:pointer;font-size:12px;border-radius:6px;flex:none}
-.acct-x:hover{color:var(--bad);background:var(--badbg)}
-.acct-body{padding:0 14px 11px}
-.pgroup{margin-bottom:8px}
-.pgroup:last-of-type{margin-bottom:0}
-.plabel{font-size:10.5px;font-weight:700;color:var(--faint);letter-spacing:.05em;margin-bottom:6px;display:flex;align-items:center;gap:6px}
-.plabel::after{content:"";flex:1;height:1px;background:var(--line)}
-.plabel.week{color:var(--acc2)}
-.brow{margin-bottom:8px}
-.brow:last-child{margin-bottom:0}
-.brow-top{display:flex;align-items:baseline;gap:8px;margin-bottom:4px}
-.brow-model{font-size:12.5px;font-weight:600}
-.brow-nums{margin-left:auto;font-size:11px;color:var(--mut)}
-.brow-pct{font-size:11.5px;font-weight:700;min-width:36px;text-align:right}
-.bar{height:5px;border-radius:99px;background:var(--line);overflow:hidden}
-.bar>i{display:block;height:100%;border-radius:99px;transition:width .5s ease}
-.bar>i.ok{background:var(--bar-ok)}
-.bar>i.warn{background:var(--bar-warn)}
-.bar>i.bad{background:var(--bar-bad)}
-.bar>i.done{background:var(--bar-done)}
-.brow-sub{display:flex;justify-content:space-between;font-size:10.5px;color:var(--faint);margin-top:3px}
-.bfoot{display:flex;align-items:center;gap:8px;margin-top:10px;padding-top:9px;border-top:1px solid var(--line)}
-.bstate{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;border-radius:99px;padding:3px 10px}
-.bstate.none{background:var(--okbg);color:var(--ok)}
-.bstate.has{background:var(--accbg);color:var(--acc2)}
-.bstate.bad{background:var(--badbg);color:var(--bad)}
-.bstate.unk{background:var(--card2);color:var(--faint)}
-.bstate .whn{font-weight:400;color:var(--faint)}
-.mini-check{width:26px;height:26px;flex:none;border:1px solid var(--line2);background:transparent;color:var(--mut);border-radius:7px;cursor:pointer;font-size:11px;transition:.15s}
-.mini-check:hover{color:var(--acc2);border-color:var(--accbd);background:var(--accbg)}
-.mini-check:disabled{opacity:.5;cursor:default}
-.switch-btn{margin-left:auto;display:inline-flex;align-items:center;gap:5px;border:1px solid var(--accbd);color:var(--acc2);background:var(--accbg);border-radius:9px;padding:5px 16px;cursor:pointer;font-size:12px;font-weight:650;transition:.15s}
-.switch-btn:hover{filter:brightness(1.05);box-shadow:0 3px 10px -4px rgba(180,120,10,.5)}
-.curmark{margin-left:auto;font-size:11px;color:var(--ok);font-weight:650}
-.campaigns{margin-top:9px;display:flex;flex-direction:column;gap:6px}
-.camp{display:flex;align-items:center;gap:8px;background:var(--accbg);border:1px solid var(--accbd);border-radius:10px;padding:7px 11px}
-.camp-info{font-size:11.5px;color:var(--acc2);min-width:0}
-.camp-info b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.camp-info span{color:var(--faint);font-size:10.5px}
-.camp-btn{margin-left:auto;flex:none;border:1px solid var(--accbd);color:var(--acc2);background:var(--card);border-radius:7px;padding:3px 11px;cursor:pointer;font-size:11px;font-weight:650}
-.camp-btn:hover{filter:brightness(1.05)}
-
-/* ---------- empty ---------- */
-.empty{text-align:center;padding:36px 20px;color:var(--faint)}
-.empty .big{font-size:30px;margin-bottom:10px;opacity:.55}
-.empty p{font-size:12.5px}
-
-/* ---------- modal ---------- */
-.overlay{position:fixed;inset:0;background:rgba(25,30,50,.35);backdrop-filter:blur(3px);z-index:50;display:flex;align-items:center;justify-content:center}
-body[data-theme="dark"] .overlay{background:rgba(2,2,8,.66)}
-.mbox{background:var(--card);border:1px solid var(--line2);border-radius:18px;padding:22px;width:400px;max-width:92vw;box-shadow:0 24px 70px -20px rgba(0,0,0,.4)}
-.mbox h3{margin:0 0 4px;font-size:15px}
-.mbox .sub{color:var(--mut);font-size:12px;margin-bottom:14px}
-.prov{width:100%;display:flex;align-items:center;gap:11px;border:1px solid var(--line2);background:var(--card2);border-radius:12px;padding:11px 13px;cursor:pointer;text-align:left;transition:.15s}
-.prov:hover{border-color:#b9bfd0;transform:translateY(-1px)}
-body[data-theme="dark"] .prov:hover{border-color:#3c3e58}
-.prov+.prov{margin-top:8px}
-.prov .chip{width:34px;height:34px;font-size:12px}
-.prov .pn{font-size:13px;font-weight:650}
-.prov .pd{font-size:11px;color:var(--faint)}
-.mstatus{margin-top:12px;font-size:12px;color:var(--mut);min-height:18px}
-.mline{display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap}
-.mlbl{font-size:12px;font-weight:650;flex:none;min-width:74px}
-input.min{flex:1;min-width:110px;background:var(--card2);border:1px solid var(--line2);border-radius:8px;padding:6px 9px;font-size:12px;color:var(--tx);outline:none}
-input.min:focus{border-color:#b9bfd0}
-body[data-theme="dark"] input.min:focus{border-color:#3c3e58}
-input.min.wide{flex-basis:100%}
-.cfgsec{font-size:10.5px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--acc2);margin:14px 0 8px}
-.cfgsec:first-of-type{margin-top:2px}
-.mfoot{display:flex;justify-content:space-between;align-items:center;margin-top:14px}
-.reopen{border:none;background:transparent;color:var(--zai);cursor:pointer;font-size:11.5px;display:none}
-.reopen:hover{text-decoration:underline}
-.cancel{border:1px solid var(--line2);background:transparent;color:var(--mut);border-radius:8px;padding:5px 16px;cursor:pointer;font-size:12px}
-.cancel:hover{color:var(--tx)}
-
-/* ---------- toasts ---------- */
-.toasts{position:fixed;right:14px;bottom:14px;display:flex;flex-direction:column;gap:8px;z-index:99}
-.toast{background:var(--card);border:1px solid var(--line2);border-left:3px solid var(--mut);border-radius:10px;padding:10px 14px;max-width:340px;font-size:12px;box-shadow:0 10px 30px -10px rgba(0,0,0,.35);animation:in .25s ease}
-.toast.ok{border-left-color:var(--ok)}
-.toast.warn{border-left-color:var(--acc2)}
-.toast.bad{border-left-color:var(--bad)}
-@keyframes in{from{transform:translateX(24px);opacity:0}to{transform:none;opacity:1}}
-.spin-mini{display:inline-block;width:12px;height:12px;border:2px solid var(--acc2);border-top-color:transparent;border-radius:50%;animation:rot .7s linear infinite;vertical-align:-2px}
-</style></head>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>ZCode Hub</title>
+<link rel="stylesheet" href="style.css">
+</head>
 <body data-theme="light">
-<div class="tbar" data-tauri-drag-region>
+<div class="tbar">
   <span class="logo" data-tauri-drag-region>ZCODE·HUB</span>
-  <span class="pill"><i class="dot" id="runDot"></i><span id="runText">检测中</span></span>
+  <span class="pill"><i class="dot" id="runDot"></i><span id="runText" data-i18n="checking"></span></span>
   <span class="tspacer" data-tauri-drag-region></span>
-  <button class="hbtn" id="refreshBtn" title="刷新" onclick="manualRefresh(this)"><i>⟳</i></button>
-  <button class="hbtn" id="themeBtn" title="切换深浅色" onclick="toggleTheme()">🌙</button>
-  <button class="hbtn" title="设置 / 关于" onclick="showCfg()">⚙</button>
-  <button class="wbtn" title="最小化" onclick="winMin()"><svg viewBox="0 0 10 10"><path d="M0 5h10"/></svg></button>
-  <button class="wbtn" title="最大化/还原" onclick="winMax()"><svg viewBox="0 0 10 10"><rect x=".7" y=".7" width="8.6" height="8.6" rx="1"/></svg></button>
-  <button class="wbtn close" title="隐藏到托盘" onclick="winHide()"><svg viewBox="0 0 10 10"><path d="M0 0l10 10M10 0L0 10"/></svg></button>
+  <button class="hbtn" id="refreshBtn" title="Refresh" data-action="refresh"><i>⟳</i></button>
+  <button class="hbtn" id="themeBtn" title="Theme" data-action="theme">🌙</button>
+  <button class="hbtn" title="Settings / About" data-action="cfg">⚙</button>
+  <button class="wbtn" data-action="min"><svg viewBox="0 0 10 10"><path d="M0 5h10"/></svg></button>
+  <button class="wbtn" data-action="max"><svg viewBox="0 0 10 10"><rect x=".7" y=".7" width="8.6" height="8.6" rx="1"/></svg></button>
+  <button class="wbtn close" data-action="hide"><svg viewBox="0 0 10 10"><path d="M0 0l10 10M10 0L0 10"/></svg></button>
 </div>
 <div class="wrap">
-<div class="btnrow">
-  <button class="btn" onclick="doCapture()">📦 保存当前登录</button>
-  <button class="btn" onclick="doAdd()">👤 添加账号</button>
-  <button class="btn" onclick="showBak()">🗄 备份 / 导入</button>
-  <button class="btn warn" onclick="doKill()">⏻ 关闭 ZCode</button>
+  <div class="btnrow">
+    <button class="btn" data-action="capture" data-i18n="capture"></button>
+    <button class="btn" data-action="add" data-i18n="add"></button>
+    <button class="btn" data-action="bak" data-i18n="backup"></button>
+    <button class="btn warn" data-action="kill" data-i18n="kill"></button>
+  </div>
+  <div class="setcard"><div class="setrow">
+    <span class="lbl" data-i18n="auto_check"></span>
+    <select id="autoCheckSel">
+      <option value="0" data-i18n="off"></option>
+      <option value="5" data-i18n="min5"></option>
+      <option value="15" data-i18n="min15"></option>
+      <option value="30" data-i18n="min30"></option>
+      <option value="60" data-i18n="min60"></option>
+    </select>
+    <span class="lbl" data-i18n="notify"></span>
+    <label class="tgl"><input type="checkbox" id="notifyTgl"><i></i></label>
+    <span class="mut num" id="lastCheckTxt"></span>
+    <button class="chkbtn" id="chkBtn" data-action="checkall" data-i18n="check_all"></button>
+  </div></div>
+  <div class="sec"><span class="t" data-i18n="accounts"></span><span class="c num" id="profCount"></span></div>
+  <div id="acctList"><div class="empty"><div class="big">◈</div><p data-i18n="connecting"></p></div></div>
 </div>
-<div class="setcard"><div class="setrow">
-  <span class="lbl">🎁 自动检测福利</span>
-  <select id="autoCheckSel" onchange="setAutoCheck()">
-    <option value="0">关闭</option><option value="5">每 5 分钟</option><option value="15">每 15 分钟</option>
-    <option value="30">每 30 分钟</option><option value="60">每 60 分钟</option>
-  </select>
-  <span class="lbl">🔔 通知</span>
-  <label class="tgl"><input type="checkbox" id="notifyTgl" onchange="setNotify(this.checked)"><i></i></label>
-  <span class="mut num" id="lastCheckTxt"></span>
-  <button class="chkbtn" id="chkBtn" onclick="doCheck()">🔍 检测全部账号</button>
-</div></div>
-<div class="sec"><span class="t">Accounts · 账号库</span><span class="c num" id="profCount"></span></div>
-<div id="acctList"><div class="empty"><div class="big">◈</div><p>正在连接…</p></div></div>
-</div>
-<div class="overlay" id="cfgModal" style="display:none">
-<div class="mbox" style="width:460px"><h3>设置 / 关于</h3>
-<div class="cfgsec">关于</div>
-<div style="font-size:12px;color:var(--mut);margin-bottom:8px">ZCode Hub <b id="cfgVer" class="num" style="color:var(--tx)"></b> · 非官方多账号管理工具</div>
-<div class="mline"><button class="camp-btn" onclick="doCheckUpdate()">🔍 检查更新</button><button class="camp-btn" onclick="openUrl('https://github.com/Ebonyhtx/zcode-hub')">GitHub 仓库</button><span class="mut" id="updTxt"></span></div>
-<div class="cfgsec">ZCode</div>
-<div class="mline"><span class="mlbl">客户端路径</span><input id="zcPath" type="text" class="min wide" placeholder="留空自动探测（运行中客户端 / 默认安装位置）"><button class="camp-btn" onclick="saveZcPath()">保存</button></div>
-<div class="mline"><span class="mlbl">数据目录</span><button class="camp-btn" onclick="invoke('open_data_dir')">打开 Hub 数据</button><button class="camp-btn" onclick="invoke('open_zcode_data_dir')">打开 ZCode 数据</button></div>
-<div class="cfgsec">系统</div>
-<div class="mline"><span class="mlbl">开机自启</span><label class="tgl"><input type="checkbox" id="autoStartTgl" onchange="setAutoStart(this.checked)"><i></i></label><span class="mut">写入启动文件夹快捷方式</span></div>
-<div class="mfoot"><span></span><button class="cancel" onclick="document.getElementById('cfgModal').style.display='none'">关闭</button></div>
-</div></div>
-<div class="overlay" id="bakModal" style="display:none">
-<div class="mbox"><h3>备份 / 导入账号库</h3><div class="sub">备份文件用口令加密（PBKDF2 + AES-256-GCM），可在任何电脑导入恢复；口令丢失无法找回。</div>
-<div class="mline"><span class="mlbl">导出到桌面</span><input id="bakPwd" type="password" class="min" placeholder="设置口令（≥6 位）"><button class="camp-btn" onclick="doExport()">导出 .zhb</button></div>
-<div class="mline"><span class="mlbl">从文件导入</span><input id="impPath" type="text" class="min wide" placeholder="粘贴 .zhb 文件完整路径"><input id="impPwd" type="password" class="min" placeholder="备份口令"><button class="camp-btn" onclick="doImport()">导入</button></div>
-<div class="mstatus" id="bakStatus"></div>
-<div class="mfoot"><span></span><button class="cancel" onclick="document.getElementById('bakModal').style.display='none'">关闭</button></div>
-</div></div>
 <div class="toasts" id="toasts"></div>
+
 <div class="overlay" id="addModal" style="display:none">
-<div class="mbox"><h3>添加账号</h3><div class="sub">选择账号类型，浏览器完成官方登录后自动存入账号库。</div>
-<button class="prov" onclick="doAdd('zai')"><span class="chip zai">Z</span><span><span class="pn">Z.AI 账号</span><br><span class="pd">chat.z.ai · Start Plan / Coding Plan</span></span></button>
-<button class="prov" onclick="doAdd('bigmodel')"><span class="chip bm">M</span><span><span class="pn">BigModel 账号</span><br><span class="pd">bigmodel.cn · 智谱个人 / 团队套餐</span></span></button>
-<div class="mstatus" id="oauthStatus"></div>
-<div class="mfoot"><button class="reopen" id="oauthReopen" onclick="oauthOpen()">↻ 重新打开登录页</button><button class="cancel" onclick="closeAddModal()">取消</button></div>
+<div class="mbox">
+  <h3 data-i18n="add_title"></h3><div class="sub" data-i18n="add_sub"></div>
+  <button class="prov" data-action="prov" data-provider="zai"><span class="chip zai">Z</span><span><span class="pn" data-i18n="zai_name"></span><br><span class="pd" data-i18n="zai_desc"></span></span></button>
+  <button class="prov" data-action="prov" data-provider="bigmodel"><span class="chip bm">M</span><span><span class="pn" data-i18n="bm_name"></span><br><span class="pd" data-i18n="bm_desc"></span></span></button>
+  <div class="mstatus" id="oauthStatus"></div>
+  <div class="mfoot"><button class="reopen" id="oauthReopen" data-action="oauth-reopen" data-i18n="reopen"></button><button class="cancel" data-action="add-cancel" data-i18n="cancel"></button></div>
 </div></div>
-<script>
-function tauriInvoke(cmd, args) {
-  if (window.__TAURI_INTERNALS__) return window.__TAURI_INTERNALS__.invoke(cmd, args);
-  return Promise.reject("Tauri not ready");
-}
-var invoke = tauriInvoke;
-var esc = function(s) { return String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/'/g,"&#39;").replace(/"/g,"&quot;"); };
-function fmtT2(v){ if(v==null) return "?";
-  var ms = Number(v) < 1e12 ? Number(v)*1000 : Number(v);
-  var d = new Date(ms), p = function(n){return String(n).padStart(2,"0");};
-  return (d.getMonth()+1)+"-"+p(d.getDate())+" "+p(d.getHours())+":"+p(d.getMinutes()); }
-function fmtQ(n){ n=Number(n)||0; var a=Math.abs(n);
-  if(a>=1e8) return (n/1e8).toFixed(a>=1e9?1:2).replace(/\.?0+$/,"")+" 亿";
-  if(a>=1e4) return (n/1e4).toFixed(a>=1e6?0:1).replace(/\.0$/,"")+" 万";
-  return String(n); }
-function pushToast(msg, kind) {
-  var box = document.getElementById("toasts");
-  var el = document.createElement("div");
-  el.className = "toast " + (kind || "");
-  el.textContent = msg; box.appendChild(el);
-  setTimeout(function() { el.style.opacity = "0"; el.style.transition = ".3s"; setTimeout(function(){ el.remove(); }, 320); }, 5200);
-}
-window.pushToast = pushToast;
 
-/* ---------- 主题 ---------- */
-function applyTheme(t) {
-  document.body.setAttribute("data-theme", t);
-  document.documentElement.style.colorScheme = t;
-  document.getElementById("themeBtn").textContent = t === "light" ? "🌙" : "☀️";
-}
-function toggleTheme() {
-  var t = document.body.getAttribute("data-theme") === "light" ? "dark" : "light";
-  try { localStorage.setItem("hub-theme", t); } catch(e) {}
-  applyTheme(t);
-}
-applyTheme((function(){ try { return localStorage.getItem("hub-theme") || "light"; } catch(e) { return "light"; } })());
+<div class="overlay" id="cfgModal" style="display:none">
+<div class="mbox" style="width:470px">
+  <h3 data-i18n="cfg_title"></h3>
+  <div class="cfgsec" data-i18n="about"></div>
+  <div style="font-size:12px;color:var(--mut);margin-bottom:8px">ZCode Hub <b id="cfgVer" class="num" style="color:var(--tx)"></b><span data-i18n="about_line"></span></div>
+  <div class="mline"><button class="camp-btn" data-action="cfg-checkupdate" data-i18n="check_upd"></button><button class="camp-btn" data-action="open-repo" data-url="https://github.com/Ebonyhtx/zcode-hub" data-i18n="repo"></button><span class="mut" id="updTxt"></span></div>
+  <div class="cfgsec" data-i18n="zcode_sec"></div>
+  <div class="mline"><span class="mlbl" data-i18n="client_path"></span><input id="zcPath" type="text" class="min wide" data-i18n-ph="path_ph"><button class="camp-btn" data-action="cfg-savepath" data-i18n="save"></button></div>
+  <div class="mline"><span class="mlbl" data-i18n="datadir"></span><button class="camp-btn" data-action="cfg-opendata" data-i18n="open_hub_data"></button><button class="camp-btn" data-action="cfg-openzdata" data-i18n="open_zdata"></button></div>
+  <div class="cfgsec" data-i18n="sys_sec"></div>
+  <div class="mline"><span class="mlbl" data-i18n="autostart"></span><label class="tgl"><input type="checkbox" id="autoStartTgl"><i></i></label><span class="mut" data-i18n="autostart_hint"></span></div>
+  <div class="mline"><span class="mlbl" data-i18n="hot"></span><label class="tgl"><input type="checkbox" id="hotTgl"><i></i></label><span class="mut" data-i18n="hot_hint"></span></div>
+  <div class="mline"><span class="mlbl" data-i18n="lang"></span><select id="langSel"><option value="zh">中文</option><option value="en">English</option></select></div>
+  <div class="mfoot"><span></span><button class="cancel" data-action="cfg-close" data-i18n="close"></button></div>
+</div></div>
 
-/* ---------- 窗口控制 ---------- */
-function winMin() { invoke("win_minimize").catch(function(){}); }
-function winMax() { invoke("win_toggle_maximize").catch(function(){}); }
-function winHide() { invoke("win_hide").catch(function(){}); }
-window.winMin = winMin; window.winMax = winMax; window.winHide = winHide; window.toggleTheme = toggleTheme;
+<div class="overlay" id="bakModal" style="display:none">
+<div class="mbox">
+  <h3 data-i18n="bak_title"></h3><div class="sub" data-i18n="bak_sub"></div>
+  <div class="mline"><span class="mlbl" data-i18n="export_to"></span><input id="bakPwd" type="password" class="min" data-i18n-ph="bak_ph"><button class="camp-btn" data-action="bak-export" data-i18n="export_btn"></button></div>
+  <div class="mline"><span class="mlbl" data-i18n="import_from"></span><input id="impPath" type="text" class="min wide" data-i18n-ph="imp_path_ph"><input id="impPwd" type="password" class="min" data-i18n-ph="imp_pwd_ph"><button class="camp-btn" data-action="bak-import" data-i18n="import_btn"></button></div>
+  <div class="mstatus" id="bakStatus"></div>
+  <div class="mfoot"><span></span><button class="cancel" data-action="bak-close" data-i18n="close"></button></div>
+</div></div>
 
-/* 拖拽：不依赖 data-tauri-drag-region 检测，mousedown 直接调原生 start_dragging */
-document.addEventListener('DOMContentLoaded', function() {
-  var bar = document.querySelector('.tbar');
-  if (!bar) return;
-  bar.addEventListener('mousedown', function(e) {
-    if (e.button !== 0) return;
-    if (e.target.closest('button') || e.target.closest('select')) return; // 按钮和下拉不触发拖拽
-    if (e.detail >= 2) return; // 双击交给 dblclick
-    invoke('win_start_drag').catch(function(){});
-  });
-  bar.addEventListener('dblclick', function(e) {
-    if (e.target.closest('button') || e.target.closest('select')) return;
-    invoke('win_toggle_maximize').catch(function(){});
-  });
-});
-function checkOne(key, btn) {
-  if (btn.disabled) return;
-  var old = btn.innerHTML;
-  btn.disabled = true; btn.innerHTML = '<span class="spin-mini"></span>';
-  invoke('check_benefits', { key: key }).then(function(r) {
-    if (r.ok && r.count > 0) pushToast('🎁 该账号有 ' + r.count + ' 项待领福利', 'warn');
-    else if (r.ok) pushToast('该账号暂无待领福利', 'ok');
-    else pushToast('检测失败', 'bad');
-  }).catch(function(e) { pushToast(String(e), 'bad'); })
-  .finally(function() { btn.disabled = false; btn.innerHTML = old; refresh(); });
-}
-window.checkOne = checkOne;
-document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeAddModal(); });
-
-function provMeta(p) {
-  if (p === "bigmodel") return { cls: "bm", tag: "BigModel", tagCls: "bm", ch: "M" };
-  if (p === "zai") return { cls: "zai", tag: "Z.AI", tagCls: "zai", ch: "Z" };
-  return { cls: "q", tag: "未知", tagCls: "unk", ch: "?" };
-}
-function planTag(plans, planId) {
-  if (!Array.isArray(plans) || !planId) return "";
-  var p = plans.filter(function(x){ return x.plan_id === planId; })[0];
-  var nm = ((p && p.name) || "") + " " + planId;
-  if (/weekend|build|-wk\d/i.test(nm)) return "周末福利";
-  if (/start.?plan/i.test(nm)) return "基础套餐";
-  return (p && p.name) || "";
-}
-function renderBuckets(balances, plans) {
-  if (!Array.isArray(balances) || !balances.length) return '<div style="font-size:12px;padding:4px 0;color:var(--faint)">暂无额度数据</div>';
-  var groups = {}, order = [];
-  balances.forEach(function(b) {
-    var pl = planTag(plans, b.plan_id);
-    var key = pl || "其他";
-    if (!groups[key]) { groups[key] = []; order.push(key); }
-    groups[key].push(b);
-  });
-  var wk = order.indexOf("周末福利");
-  if (wk > 0) { order.splice(wk, 1); order.unshift("周末福利"); }
-  return order.map(function(key) {
-    var rows = groups[key].map(function(b) {
-      var name = b.show_name || b.model || "?";
-      var avail = Number(b.available_units !== undefined ? b.available_units : b.remaining_units || 0);
-      var total = Number(b.total_units || 0); var used = Number(b.used_units || 0);
-      var exp = b.expires_at || b.period_end;
-      var pct = total > 0 ? Math.round(avail/total*100) : 0;
-      var done = avail <= 0; var cls = done ? "done" : (pct < 10 ? "bad" : (pct < 40 ? "warn" : "ok"));
-      return '<div class="brow"><div class="brow-top"><span class="brow-model">'+esc(name)+'</span><span class="brow-nums num">'+ (done?'已用完':fmtQ(avail)+' 剩余') +'</span><span class="brow-pct num" style="color:'+(done?'var(--faint)':pct<10?'var(--bad)':pct<40?'var(--acc2)':'var(--ok)')+'">'+pct+'%</span></div><div class="bar"><i class="'+cls+'" style="width:'+(done?100:pct)+'%"></i></div><div class="brow-sub"><span>总 '+fmtQ(total)+(used?' · 已用 '+fmtQ(used):'')+'</span><span class="num">'+(exp?fmtT2(exp)+' 到期':'')+'</span></div></div>';
-    }).join("");
-    var week = key === "周末福利" ? " week" : "";
-    return '<div class="pgroup"><div class="plabel'+week+'">'+esc(key)+'</div>'+rows+'</div>';
-  }).join("");
-}
-var prevCounts = {};
-function renderBenefitState(b) {
-  if (!b) return '<div class="bstate unk">🔎 未检测</div>';
-  var when = b.checked_at ? ' <span class="whn num">· '+fmtT2(b.checked_at)+'</span>' : "";
-  if (b.ok === false) return '<div class="bstate bad">⚠ 检测失败: '+esc(b.error || "?")+'</div>';
-  if (!b.count) return '<div class="bstate none">✓ 无待领福利'+when+'</div>';
-  var rows = '<div class="campaigns">' + (b.campaigns || []).map(function(c) {
-    var detail = c.detail ? ' <span>(' + esc(c.detail) + ')</span>' : "";
-    return '<div class="camp"><div class="camp-info"><b>'+esc(c.title)+'</b><span>'+esc(c.grant)+' Token'+detail+'</span></div><button class="camp-btn" onclick="doOpenClient()">去领取</button></div>';
-  }).join("") + '</div>';
-  return '<div class="bstate has">🎁 '+b.count+' 个待领福利'+when+'</div>' + rows;
-}
-function cardHtml(p, quotaData, benefitData) {
-  var m = provMeta(p.provider);
-  var chips = '<span class="chip '+m.cls+'">'+m.ch+'</span>';
-  var tags = (p.is_current ? '<span class="tag cur">当前</span>' : '') + (p.provider ? '<span class="tag '+m.tagCls+'">'+m.tag+'</span>' : '');
-  var balances = [], plans = [];
-  if (quotaData && quotaData.ok) { var d = quotaData.data; if (d && d.data) { balances = d.data.balances || []; plans = d.data.plans || []; } }
-  var buckets = quotaData && quotaData.ok ? renderBuckets(balances, plans)
-    : '<div style="font-size:11.5px;color:var(--bad);padding:2px 0">'+esc(quotaData && quotaData.error || "获取失败")+'</div>';
-  var benefit = renderBenefitState(benefitData);
-  var foot = p.is_current
-    ? '<span class="curmark">✓ 当前使用中</span>'
-    : '<button class="switch-btn" onclick="doSwitch(\''+esc(p.key)+'\')">⇄ 切换到此账号</button>';
-  return '<div class="acct'+(p.is_current?' cur':'')+'"><div class="acct-head">'+chips
-    +'<span class="acct-name">'+esc(p.label)+'</span>'+tags
-    +'<button class="acct-x" title="删除存档" onclick="doDelete(\''+esc(p.key)+'\')">✕</button></div>'
-    +'<div class="acct-body">'+buckets+'<div class="bfoot">'+benefit+"<button class='mini-check' title='只检测这个账号的福利' onclick='checkOne(\"" + esc(p.key) + "\",this)'>🔍</button>"+foot+'</div></div></div>';
-}
-var refreshing = false;
-function refresh(done, force) {
-  if (refreshing) { if (done) done(); return; }
-  refreshing = true;
-  invoke("get_state").then(function(st) {
-    document.getElementById("runDot").className = "dot" + (st.zcode_running ? " on" : "");
-    document.getElementById("runText").textContent = st.zcode_running ? "ZCode 运行中" : "未运行";
-    document.getElementById("profCount").textContent = st.profiles.length + " 个账号";
-    var sel = document.getElementById("autoCheckSel");
-    var mins = st.settings && st.settings.auto_check_minutes !== undefined ? st.settings.auto_check_minutes : 15;
-    if (document.activeElement !== sel && String(sel.value) !== String(mins)) sel.value = String(mins);
-    var tg = document.getElementById("notifyTgl");
-    tg.checked = !(st.settings && st.settings.notify_enabled === false);
-    document.getElementById("lastCheckTxt").textContent = st.last_check ? "上次 " + fmtT2(st.last_check) : "未自动检测";
-    var bens = st.benefits || {};
-    Object.keys(bens).forEach(function(k) {
-      var c = bens[k] && bens[k].ok ? (bens[k].count || 0) : 0;
-      if (prevCounts[k] !== undefined && c > prevCounts[k] && c > 0) pushToast("🎁 检测到新的可领福利（" + c + " 项），打开 ZCode 客户端领取", "ok");
-      prevCounts[k] = c;
-    });
-    var list = st.profiles.slice().sort(function(a,b){ return (b.is_current?1:0)-(a.is_current?1:0); });
-    if (!list.length) list = [{ key: "__current__", label: st.current_label, is_current: true, provider: st.current_provider }];
-    Promise.all(list.map(function(p) {
-      return invoke("fetch_quota", { key: p.key, force: !!force }).catch(function(e) { return { ok: false, error: String(e) }; })
-        .then(function(q) { return cardHtml(p, q, bens[p.key]); });
-    })).then(function(cards) {
-      document.getElementById("acctList").innerHTML = cards.join("") || '<div class="empty"><div class="big">◈</div><p>暂无账号 · 点上方「添加账号」登录，或「保存当前登录」收编现有登录</p></div>';
-      refreshing = false; if (done) done();
-    });
-  }).catch(function(e) { refreshing = false; if (done) done(); pushToast("刷新失败: " + e, "bad"); });
-}
-function manualRefresh(btn) {
-  btn.classList.add("spin");
-  refresh(function() { setTimeout(function() { btn.classList.remove("spin"); }, 300); }, true);
-}
-function setAutoCheck() {
-  invoke("set_settings", { minutes: Number(document.getElementById("autoCheckSel").value), notifyEnabled: document.getElementById("notifyTgl").checked }).then(function() {
-    pushToast("已保存设置", "ok"); refresh();
-  }).catch(function(e) { pushToast(String(e), "bad"); });
-}
-function setNotify(v) {
-  invoke("set_settings", { minutes: Number(document.getElementById("autoCheckSel").value), notifyEnabled: !!v }).then(function() {
-    pushToast(v ? "已开启系统通知" : "已关闭系统通知", "ok");
-  }).catch(function(e) { pushToast(String(e), "bad"); });
-}
-function doCheck() {
-  var btn = document.getElementById("chkBtn");
-  btn.disabled = true; btn.innerHTML = '<span class="spin-mini"></span> 检测中…';
-  invoke("check_all_benefits").then(function(r) {
-    btn.disabled = false; btn.textContent = "🔍 检测全部账号";
-    if (!r.ok) { pushToast("检测失败", "bad"); return; }
-    if (r.total_campaigns === 0) pushToast("检测完成：" + r.checked_ok + "/" + r.accounts + " 个账号正常，均无待领福利", "ok");
-    else pushToast("检测完成：" + r.accounts_with_benefits + "/" + r.accounts + " 个账号有 🎁" + r.total_campaigns + " 项福利待领（打开 ZCode 客户端领取）", "warn");
-    refresh();
-  }).catch(function(e) {
-    btn.disabled = false; btn.textContent = "🔍 检测全部账号";
-    pushToast(String(e), "bad");
-  });
-}
-function doCapture() { invoke("capture_profile", { name: null }).then(function(r) { if (r.ok) { pushToast("已保存: " + r.label, "ok"); refresh(); } else pushToast(r.error, "bad"); }); }
-function doSwitch(key) { if (!confirm("切换到该账号？ZCode 将自动关闭并重启（正在运行的任务会中断）。")) return; invoke("switch_profile", { key: key }).then(function(r) {
-  if (r.ok) {
-    pushToast(r.relaunched ? "已切换并重启 ZCode" : "凭据已切换，ZCode 未自动重启，请手动打开", r.relaunched ? "ok" : "warn");
-    refresh();
-  } else pushToast(r.error || "切换失败", "bad");
-}); }
-function doDelete(key) { if (!confirm("确定删除这个账号存档？\n（不影响 ZCode 客户端当前登录）")) return; invoke("delete_profile", { key: key }).then(function() { pushToast("已删除", "ok"); refresh(); }); }
-function doKill() { if (!confirm("关闭 ZCode 客户端？")) return; invoke("kill_zcode_client").then(function() { refresh(); }); }
-function doOpenClient() { invoke("open_zcode_client"); }
-var oauthTimer = null;
-function pollOauthStatus() {
-  if (oauthTimer) clearInterval(oauthTimer);
-  oauthTimer = setInterval(function() {
-    invoke("oauth_status").then(function(s) {
-      var st = document.getElementById("oauthStatus");
-      if (s.status === "ready") {
-        clearInterval(oauthTimer); oauthTimer = null;
-        document.getElementById("oauthReopen").style.display = "none";
-        st.innerHTML = '<span style="color:var(--ok)">✓ 登录成功：' + esc(s.label || "") + (s.provider ? "（" + esc(s.provider) + "）" : "") + '</span>';
-        if (s.warning) pushToast("⚠ " + s.warning, "bad"); else pushToast("账号已保存: " + s.label, "ok");
-        setTimeout(function() { closeAddModal(); refresh(); }, s.warning ? 2500 : 900);
-      } else if (s.status === "failed") {
-        clearInterval(oauthTimer); oauthTimer = null;
-        document.getElementById("oauthReopen").style.display = "none";
-        st.innerHTML = '<span style="color:var(--bad)">✗ 失败: ' + esc(s.error || "?") + '</span>';
-      } else if (s.status === "pending") {
-        document.getElementById("oauthReopen").style.display = "block";
-      }
-    }).catch(function() {});
-  }, 2000);
-}
-function doAdd(provider) {
-  if (!provider) { document.getElementById("addModal").style.display = "flex"; document.getElementById("oauthStatus").textContent = ""; return; }
-  document.getElementById("oauthStatus").innerHTML = '<span class="spin-mini"></span> 正在打开 ' + (provider === "bigmodel" ? "BigModel（智谱）" : "Z.AI") + " 官方登录页…";
-  invoke("oauth_start", { provider: provider }).then(function(r) {
-    if (r && r.ok === false) document.getElementById("oauthStatus").textContent = (r.error || "failed") + "，可点下方重新打开";
-    pollOauthStatus();
-  }).catch(function(e) { document.getElementById("oauthStatus").textContent = String(e); });
-}
-function closeAddModal() {
-  document.getElementById("addModal").style.display = "none";
-  document.getElementById("oauthReopen").style.display = "none";
-  if (oauthTimer) { clearInterval(oauthTimer); oauthTimer = null; }
-}
-function oauthOpen() { invoke("oauth_open").catch(function(e) { pushToast(String(e), "bad"); }); }
-window.doSwitch = doSwitch; window.doDelete = doDelete; window.doCapture = doCapture;
-window.doCheck = doCheck; window.doAdd = doAdd; window.doKill = doKill;
-window.closeAddModal = closeAddModal; window.doOpenClient = doOpenClient; window.oauthOpen = oauthOpen;
-window.setAutoCheck = setAutoCheck; window.setNotify = setNotify; window.manualRefresh = manualRefresh;
-function showCfg() {
-  invoke('get_state').then(function(st) {
-    document.getElementById('cfgVer').textContent = 'v' + (st.version || '?');
-    document.getElementById('autoStartTgl').checked = !!st.autostart;
-    var zp = st.settings && st.settings.zcode_path ? st.settings.zcode_path : '';
-    if (document.activeElement !== document.getElementById('zcPath')) document.getElementById('zcPath').value = zp;
-    document.getElementById('updTxt').textContent = '';
-    document.getElementById('cfgModal').style.display = 'flex';
-  });
-}
-function saveZcPath() {
-  var p = document.getElementById('zcPath').value.trim();
-  invoke('set_settings', { minutes: Number(document.getElementById('autoCheckSel').value), notifyEnabled: document.getElementById('notifyTgl').checked, zcodePath: p }).then(function() {
-    pushToast('ZCode 路径已保存（留空 = 自动探测）', 'ok');
-  }).catch(function(e) { pushToast(String(e), 'bad'); });
-}
-function setAutoStart(v) {
-  invoke('set_autostart', { enable: !!v }).then(function(r) {
-    pushToast(r.ok ? (r.enabled ? '已开启开机自启' : '已关闭开机自启') : '设置失败', r.ok ? 'ok' : 'bad');
-  }).catch(function(e) { pushToast(String(e), 'bad'); });
-}
-function doCheckUpdate() {
-  var t = document.getElementById('updTxt');
-  t.textContent = '检查中…';
-  invoke('check_update').then(function(r) {
-    if (!r.ok) { t.textContent = '检查失败: ' + (r.error || '?'); return; }
-    if (!r.latest) { t.textContent = r.note || '已是最新'; return; }
-    if (r.up_to_date) t.textContent = '已是最新（v' + r.current + '）';
-    else {
-      t.innerHTML = '发现新版本 v' + r.latest + ' <a href="#" onclick="openUrl(\'' + r.url + '\');return false" style="color:var(--zai)">前往下载</a>';
-      pushToast('🆕 发现新版本 v' + r.latest, 'warn');
-    }
-  }).catch(function(e) { t.textContent = String(e); });
-}
-function openUrl(u) { invoke('open_url', { url: u }); }
-function showBak() { document.getElementById('bakModal').style.display = 'flex'; document.getElementById('bakStatus').textContent = ''; }
-function doExport() {
-  var pwd = document.getElementById('bakPwd').value;
-  if (!pwd || pwd.length < 6) { pushToast('口令至少 6 位', 'bad'); return; }
-  document.getElementById('bakStatus').textContent = '正在导出…';
-  invoke('export_bundle', { password: pwd }).then(function(r) {
-    document.getElementById('bakStatus').textContent = r.ok ? '✓ 已保存到桌面: ' + r.path : '✗ ' + (r.error || '失败');
-    if (r.ok) pushToast('备份完成（' + r.accounts + ' 个账号）→ 桌面', 'ok');
-  }).catch(function(e) { document.getElementById('bakStatus').textContent = String(e); });
-}
-function doImport() {
-  var p = document.getElementById('impPath').value.trim().replace(/^"|"$/g, '');
-  var pwd = document.getElementById('impPwd').value;
-  if (!p || !pwd) { pushToast('先填文件路径和口令', 'bad'); return; }
-  document.getElementById('bakStatus').textContent = '正在导入…';
-  invoke('import_bundle', { path: p, password: pwd }).then(function(r) {
-    if (r.ok) {
-      document.getElementById('bakStatus').textContent = '✓ 导入 ' + r.added + ' 个，跳过 ' + r.skipped + ' 个（已存在的同名家录不覆盖）';
-      pushToast('导入完成：新增 ' + r.added + ' 个账号', 'ok'); refresh();
-    } else { document.getElementById('bakStatus').textContent = '✗ ' + (r.error || '失败'); }
-  }).catch(function(e) { document.getElementById('bakStatus').textContent = String(e); });
-}
-window.showBak = showBak; window.doExport = doExport; window.doImport = doImport;
-window.showCfg = showCfg; window.saveZcPath = saveZcPath; window.setAutoStart = setAutoStart;
-window.doCheckUpdate = doCheckUpdate; window.openUrl = openUrl;
-function tryStart() { if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) { refresh(); setInterval(function(){ refresh(); }, 60000); } else { setTimeout(tryStart, 200); } }
-tryStart();
-</script></body></html>
+<script src="app.js"></script>
+</body>
+</html>
