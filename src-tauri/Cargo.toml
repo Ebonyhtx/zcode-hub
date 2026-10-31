@@ -1,10 +1,11 @@
 [package]
 name = "zcode-hub"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 
 [dependencies]
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 aes-gcm = "0.10"
@@ -14,6 +15,8 @@ reqwest = { version = "0.12", features = ["blocking", "json"] }
 dirs = "5"
 whoami = "1"
 chrono = "0.4"
+rand = "0.8"
+url = "2"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
