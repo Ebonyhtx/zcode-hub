@@ -172,6 +172,12 @@ body[data-theme="dark"] .prov:hover{border-color:#3c3e58}
 .prov .pn{font-size:13px;font-weight:650}
 .prov .pd{font-size:11px;color:var(--faint)}
 .mstatus{margin-top:12px;font-size:12px;color:var(--mut);min-height:18px}
+.mline{display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap}
+.mlbl{font-size:12px;font-weight:650;flex:none;min-width:74px}
+input.min{flex:1;min-width:110px;background:var(--card2);border:1px solid var(--line2);border-radius:8px;padding:6px 9px;font-size:12px;color:var(--tx);outline:none}
+input.min:focus{border-color:#b9bfd0}
+body[data-theme="dark"] input.min:focus{border-color:#3c3e58}
+input.min.wide{flex-basis:100%}
 .mfoot{display:flex;justify-content:space-between;align-items:center;margin-top:14px}
 .reopen{border:none;background:transparent;color:var(--zai);cursor:pointer;font-size:11.5px;display:none}
 .reopen:hover{text-decoration:underline}
@@ -202,6 +208,7 @@ body[data-theme="dark"] .prov:hover{border-color:#3c3e58}
 <div class="btnrow">
   <button class="btn" onclick="doCapture()">📦 保存当前登录</button>
   <button class="btn" onclick="doAdd()">👤 添加账号</button>
+  <button class="btn" onclick="showBak()">🗄 备份 / 导入</button>
   <button class="btn warn" onclick="doKill()">⏻ 关闭 ZCode</button>
 </div>
 <div class="setcard"><div class="setrow">
@@ -218,6 +225,13 @@ body[data-theme="dark"] .prov:hover{border-color:#3c3e58}
 <div class="sec"><span class="t">Accounts · 账号库</span><span class="c num" id="profCount"></span></div>
 <div id="acctList"><div class="empty"><div class="big">◈</div><p>正在连接…</p></div></div>
 </div>
+<div class="overlay" id="bakModal" style="display:none">
+<div class="mbox"><h3>备份 / 导入账号库</h3><div class="sub">备份文件用口令加密（PBKDF2 + AES-256-GCM），可在任何电脑导入恢复；口令丢失无法找回。</div>
+<div class="mline"><span class="mlbl">导出到桌面</span><input id="bakPwd" type="password" class="min" placeholder="设置口令（≥6 位）"><button class="camp-btn" onclick="doExport()">导出 .zhb</button></div>
+<div class="mline"><span class="mlbl">从文件导入</span><input id="impPath" type="text" class="min wide" placeholder="粘贴 .zhb 文件完整路径"><input id="impPwd" type="password" class="min" placeholder="备份口令"><button class="camp-btn" onclick="doImport()">导入</button></div>
+<div class="mstatus" id="bakStatus"></div>
+<div class="mfoot"><span></span><button class="cancel" onclick="document.getElementById('bakModal').style.display='none'">关闭</button></div>
+</div></div>
 <div class="toasts" id="toasts"></div>
 <div class="overlay" id="addModal" style="display:none">
 <div class="mbox"><h3>添加账号</h3><div class="sub">选择账号类型，浏览器完成官方登录后自动存入账号库。</div>
@@ -474,6 +488,29 @@ window.doSwitch = doSwitch; window.doDelete = doDelete; window.doCapture = doCap
 window.doCheck = doCheck; window.doAdd = doAdd; window.doKill = doKill;
 window.closeAddModal = closeAddModal; window.doOpenClient = doOpenClient; window.oauthOpen = oauthOpen;
 window.setAutoCheck = setAutoCheck; window.setNotify = setNotify; window.manualRefresh = manualRefresh;
+function showBak() { document.getElementById('bakModal').style.display = 'flex'; document.getElementById('bakStatus').textContent = ''; }
+function doExport() {
+  var pwd = document.getElementById('bakPwd').value;
+  if (!pwd || pwd.length < 6) { pushToast('口令至少 6 位', 'bad'); return; }
+  document.getElementById('bakStatus').textContent = '正在导出…';
+  invoke('export_bundle', { password: pwd }).then(function(r) {
+    document.getElementById('bakStatus').textContent = r.ok ? '✓ 已保存到桌面: ' + r.path : '✗ ' + (r.error || '失败');
+    if (r.ok) pushToast('备份完成（' + r.accounts + ' 个账号）→ 桌面', 'ok');
+  }).catch(function(e) { document.getElementById('bakStatus').textContent = String(e); });
+}
+function doImport() {
+  var p = document.getElementById('impPath').value.trim().replace(/^"|"$/g, '');
+  var pwd = document.getElementById('impPwd').value;
+  if (!p || !pwd) { pushToast('先填文件路径和口令', 'bad'); return; }
+  document.getElementById('bakStatus').textContent = '正在导入…';
+  invoke('import_bundle', { path: p, password: pwd }).then(function(r) {
+    if (r.ok) {
+      document.getElementById('bakStatus').textContent = '✓ 导入 ' + r.added + ' 个，跳过 ' + r.skipped + ' 个（已存在的同名家录不覆盖）';
+      pushToast('导入完成：新增 ' + r.added + ' 个账号', 'ok'); refresh();
+    } else { document.getElementById('bakStatus').textContent = '✗ ' + (r.error || '失败'); }
+  }).catch(function(e) { document.getElementById('bakStatus').textContent = String(e); });
+}
+window.showBak = showBak; window.doExport = doExport; window.doImport = doImport;
 function tryStart() { if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) { refresh(); setInterval(function(){ refresh(); }, 60000); } else { setTimeout(tryStart, 200); } }
 tryStart();
 </script></body></html>
