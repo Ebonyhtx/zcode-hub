@@ -38,12 +38,13 @@ jobs:
           $ver = $conf.version
           $sig = Get-ChildItem "src-tauri/target/release/bundle/nsis/*.sig" | Select-Object -First 1
           $exe = Get-ChildItem "src-tauri/target/release/bundle/nsis/*x64-setup.exe" | Select-Object -First 1
+          $exeName = $exe.Name.Replace(' ', '.')  # GitHub 资产名把空格换成点
           $signature = (Get-Content $sig.FullName -Raw).Trim()
           $json = [ordered]@{
             version = $ver
             notes = "ZCode Hub v$ver"
             pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-            platforms = [ordered]@{ "windows-x86_64" = [ordered]@{ signature = $signature; url = "https://github.com/Ebonyhtx/zcode-hub/releases/latest/download/$($exe.Name -replace " ",".")" } }
+            platforms = [ordered]@{ "windows-x86_64" = [ordered]@{ signature = $signature; url = "https://github.com/Ebonyhtx/zcode-hub/releases/latest/download/$exeName" } }
           }
           $json | ConvertTo-Json -Depth 5 | Set-Content "src-tauri/target/release/bundle/nsis/latest.json" -Encoding utf8
 
