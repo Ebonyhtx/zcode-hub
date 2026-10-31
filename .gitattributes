@@ -1,0 +1,16 @@
+# 行尾规范化：仓库内统一 LF，跨平台协作不打架
+* text=auto eol=lf
+
+# Windows 专属脚本保留 CRLF
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制
+*.ico binary
+*.png binary
+*.exe binary
+*.zhb binary
+
+# 产物与本地数据永不入库（双保险，与 .gitignore 互补）
+credentials.snap binary
+snapkey binary

@@ -1,0 +1,45 @@
+name: 🐛 问题反馈 / Bug report
+description: 报告一个可复现的问题 / Report a reproducible issue
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提交前请先检索已有 Issue。**请勿粘贴任何令牌、凭据或账号信息**（见 SECURITY.md）。
+        Search existing issues first. **Never paste tokens, credentials or account info.**
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 发生了什么 / What happened?
+      description: 现象与期望行为 / Observed vs expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤 / Steps to reproduce
+      placeholder: "1. …  2. …  3. …"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: ZCode Hub 版本 / Version
+      placeholder: "1.5.0（设置/关于 里可见）"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: 系统 / OS
+      options:
+        - Windows 11
+        - Windows 10
+        - 其他 / Other
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志 / 截图 / Logs or screenshots
+      description: 脱敏后粘贴。红轴令牌一律打码。

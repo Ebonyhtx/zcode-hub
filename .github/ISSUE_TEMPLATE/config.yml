@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全问题 / Security issues
+    url: https://github.com/Ebonyhtx/zcode-hub/blob/main/SECURITY.md
+    about: 请勿公开 Issue，走私下报告渠道 / Report privately, do not open a public issue

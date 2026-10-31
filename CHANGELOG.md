@@ -3,6 +3,17 @@
 本文件记录 ZCode Hub 的显著变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.5.0] - 2026-10-31
+
+### 新增
+- 账号卡片折叠/展开双状态：默认当前展开其余收起，头部点击或箭头切换，批量收起/展开，折叠态福利计数徽标，状态持久化
+- 福利检测结果与上次检测时间持久化（重启不再显示「未检测」）
+- 公开仓库配套：双语 README、行为准则、NOTICE/第三方声明、Issue/PR 模板、.gitattributes/.editorconfig、AGENTS.md、docs/DESIGN.md 设计文档
+- scripts/repo-check.sh 仓库一致性门禁（版本双文件同步 / CHANGELOG 收录 / 必备文件 / 语言互链），已接入 CI
+
+### 调整
+- 默认窗口 640x850 → 620x800
+
 ## [1.4.0] - 2026-10-31
 
 ### 新增

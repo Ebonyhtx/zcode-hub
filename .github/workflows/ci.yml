@@ -29,3 +29,6 @@ jobs:
       - name: Scanner selftest
         shell: bash
         run: bash scripts/secret-scan.sh --selftest
+      - name: Repo consistency gate
+        shell: bash
+        run: bash scripts/repo-check.sh

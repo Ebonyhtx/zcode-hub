@@ -1,5 +1,12 @@
 # ZCode Hub
 
+**[简体中文] | [English](README.en.md)**
+
+[![CI](https://github.com/Ebonyhtx/zcode-hub/actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml)
+[![Release](https://github.com/Ebonyhtx/zcode-hub/actions/workflows/release.yml/badge.svg)](../../actions/workflows/release.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)
+
 **Tauri 2 桌面工具：多个 ZCode 账号的一键切换、额度展示、福利检测与设备身份隔离。**
 
 只换登录身份——项目、会话、设置全部共用不动。本地优先：无遥测、无远端存储，额度与福利查询直连官方接口。
@@ -55,7 +62,7 @@ npx --yes @tauri-apps/cli build --bundles nsis
 
 ## 贡献
 
-欢迎 Issue / PR。开发环境搭建、防泄密钩子配置、测试与发布流程见 [CONTRIBUTING.md](CONTRIBUTING.md)；安全 issue 请走 [SECURITY.md](SECURITY.md) 的私下渠道。
+欢迎 Issue / PR（请用 [Issue 模板](../../issues/new/choose)）。行为准则见 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)；开发环境、防泄密钩子、测试与发布流程见 [CONTRIBUTING.md](CONTRIBUTING.md)；架构与设计见 [docs/DESIGN.md](docs/DESIGN.md)；安全 issue 请走 [SECURITY.md](SECURITY.md) 的私下渠道。第三方组件声明见 [NOTICE.md](NOTICE.md)。
 
 ## Roadmap
 
