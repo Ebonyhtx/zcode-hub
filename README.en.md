@@ -13,6 +13,10 @@ Switches only the login identity — projects, sessions and settings stay untouc
 
 > ⚠️ Unofficial tool, not affiliated with Z.ai / Zhipu (BigModel). Respect their terms of service; account risk is yours.
 
+<p align="center"><img src="docs/screenshot-en.png" width="620" alt="ZCode Hub main window"></p>
+
+*Screenshot shows built-in demo data, not real accounts.*
+
 ## Features
 
 - **Multi-account switching** — one click, auto-preserved current login (no lost accounts), client auto-restart
