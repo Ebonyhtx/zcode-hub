@@ -640,6 +640,7 @@ async fn install_update(app: tauri::AppHandle) -> Result<serde_json::Value, Stri
 
 #[tauri::command]
 fn get_state() -> serde_json::Value {
+    load_benefits_once();
     let cur = cred_path();
     let cur_label = if cur.exists() { read_json(&cur).map(|c| account_label(&c)).unwrap_or("(err)".into()) } else { "(未登录)".into() };
     let cur_provider = if cur.exists() {
@@ -1286,11 +1287,33 @@ fn _benefits_key_result(key: &str) -> Value {
     json!({"ok": true, "count": camps.len(), "campaigns": camps, "checked_at": ts})
 }
 
+fn benefits_file() -> PathBuf { app_data_dir().join("benefits.json") }
+
+fn persist_benefits() {
+    let map = BENEFITS.lock().unwrap().clone().unwrap_or_default();
+    let v = json!({"last_check": *LAST_CHECK.lock().unwrap(), "map": map});
+    let _ = write_json(&benefits_file(), &v);
+}
+
+fn load_benefits_once() {
+    let mut g = BENEFITS.lock().unwrap();
+    if g.is_some() { return; }
+    if let Ok(v) = read_json(&benefits_file()) {
+        if let Some(map) = v.get("map").and_then(|m| m.as_object()) {
+            *g = Some(map.iter().map(|(k, val)| (k.clone(), val.clone())).collect());
+            if let Some(lc) = v.get("last_check").and_then(|x| x.as_i64()) {
+                *LAST_CHECK.lock().unwrap() = Some(lc);
+            }
+        }
+    }
+}
+
 fn run_benefit_check_for(key: &str) -> Value {
     let result = _benefits_key_result(key);
     BENEFITS.lock().unwrap()
         .get_or_insert_with(std::collections::HashMap::new)
         .insert(key.to_string(), result.clone());
+    persist_benefits();
     result
 }
 
