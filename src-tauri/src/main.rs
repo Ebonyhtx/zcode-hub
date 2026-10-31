@@ -1111,7 +1111,11 @@ fn _all_profile_keys() -> Vec<String> {
     let mut keys: Vec<String> = Vec::new();
     if let Ok(rd) = std::fs::read_dir(profiles_dir()) {
         for e in rd.flatten() {
-            if e.path().join(CRED_FILE).exists() { keys.push(e.file_name().to_string_lossy().to_string()); }
+            // DPAPI 加密快照（credentials.snap）或旧格式（credentials.json）都算有效存档
+            let p = e.path();
+            if p.join("credentials.snap").exists() || p.join(CRED_FILE).exists() {
+                keys.push(e.file_name().to_string_lossy().to_string());
+            }
         }
     }
     keys.sort();
