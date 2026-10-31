@@ -123,6 +123,10 @@ body[data-theme="dark"] .tag.bm{background:rgba(167,139,250,.12)}
 .bar>i.bad{background:var(--bar-bad)}
 .bar>i.done{background:var(--bar-done)}
 .brow-sub{display:flex;justify-content:space-between;font-size:10.5px;color:var(--faint);margin-top:3px}
+.expsoon{color:var(--acc2);font-weight:700;cursor:default}
+.expsoon.expbad{color:var(--bad)}
+.tag.exptag{background:var(--accbg);color:var(--acc2);cursor:default}
+.tag.exptag.expbad{background:var(--badbg);color:var(--bad)}
 .bfoot{display:flex;align-items:center;gap:8px;margin-top:10px;padding-top:9px;border-top:1px solid var(--line)}
 .bstate{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;border-radius:99px;padding:3px 10px}
 .bstate.none{background:var(--okbg);color:var(--ok)}
