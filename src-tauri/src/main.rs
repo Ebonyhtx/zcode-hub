@@ -205,8 +205,19 @@ fn decrypt_value(encrypted: &str) -> Result<String, String> {
 
 // -------------------------------------------------------------------- paths
 
-fn v2_dir() -> PathBuf {
+fn home_v2() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".zcode").join("v2")
+}
+// setting.json 的 dataBaseDir 若被用户改过，凭据等数据文件跟着走（setting.json 本身留在原处）
+fn v2_dir() -> PathBuf {
+    let base = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let root = std::fs::read_to_string(home_v2().join("setting.json")).ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|v| v.get("dataBaseDir").and_then(|d| d.as_str()).map(|s| s.trim().to_string()))
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or(base);
+    root.join(".zcode").join("v2")
 }
 fn cred_path() -> PathBuf { v2_dir().join(CRED_FILE) }
 
@@ -256,7 +267,14 @@ fn read_json(path: &PathBuf) -> Result<Value, String> {
 
 fn write_json(path: &PathBuf, v: &Value) -> Result<(), String> {
     if let Some(p) = path.parent() { std::fs::create_dir_all(p).map_err(|e| e.to_string())?; }
-    std::fs::write(path, serde_json::to_string_pretty(v).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+    let body = serde_json::to_string_pretty(v).map_err(|e| e.to_string())?;
+    // 原子写：临时文件 + rename，进程被杀也不会留下半截 JSON
+    let tmp = path.with_extension("hub-tmp");
+    std::fs::write(&tmp, body).map_err(|e| e.to_string())?;
+    match std::fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(e) => { let _ = std::fs::remove_file(&tmp); Err(e.to_string()) }
+    }
 }
 
 // ------------------------------------------------------------- account label
@@ -319,7 +337,15 @@ fn zcode_exe_path() -> Option<String> {
         "Get-Process ZCode -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Path"])
         .creation_flags(0x08000000)
         .output().ok()
-        .and_then(|o| { let s = String::from_utf8_lossy(&o.stdout).trim().to_string(); if s.is_empty() { None } else { Some(s) } });
+        .and_then(|o| { let s = String::from_utf8_lossy(&o.stdout).trim().to_string(); if s.is_empty() { None } else { Some(s) } })
+        .or_else(|| {
+            // 客户端未运行时按常见安装位置兜底
+            let mut cands = vec![r"C:\Program Files\ZCode\ZCode.exe".to_string()];
+            if let Ok(la) = std::env::var("LOCALAPPDATA") {
+                cands.push(format!(r"{}\Programs\ZCode\ZCode.exe", la));
+            }
+            cands.into_iter().find(|c| std::path::Path::new(c).exists())
+        });
     if let Some(ref p) = found { *EXE_CACHE.lock().unwrap() = Some(p.clone()); }
     found
 }
@@ -443,12 +469,19 @@ fn switch_profile(key: String) -> serde_json::Value {
             .map(|c| c.get("zcodejwttoken").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false))
             .unwrap_or(false);
         let cl = cur_creds.as_ref().map(|c| account_label(c)).unwrap_or_default();
-        let mut known = false;
+        let mut known_dir: Option<PathBuf> = None;
         if let Ok(rd) = std::fs::read_dir(profiles_dir()) {
             for e in rd.flatten() {
-                if read_snapshot_value(&e.path()).map(|c| account_label(&c)) == Some(cl.clone()) { known = true; break; }
+                if read_snapshot_value(&e.path()).map(|c| account_label(&c)) == Some(cl.clone()) {
+                    known_dir = Some(e.path()); break;
+                }
             }
         }
+        // 回写：当前登录匹配已有存档时，把客户端刷新过的最新凭据同步回该存档（token 保鲜）
+        if let (Some(kd), Some(cv)) = (known_dir.as_ref(), cur_creds.as_ref()) {
+            let _ = write_snapshot(kd, cv);
+        }
+        let known = known_dir.is_some();
         if !known && valid_session {
             let auto = format!("autosave-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
             let _ = std::fs::create_dir_all(profiles_dir().join(&auto));
@@ -468,8 +501,95 @@ fn switch_profile(key: String) -> serde_json::Value {
         .and_then(|s| decrypt_value(s).ok())
         .unwrap_or_default();
     sync_provider_family_domain(&fam);
+    // 客户端会读套餐缓存，切换后必须清掉避免上一账号的套餐状态残留
+    let _ = std::fs::remove_file(v2_dir().join("coding-plan-cache.json"));
     let rel = if was { exe.as_ref().map(|e| launch_zcode_process(e)).unwrap_or(false) } else { false };
     json!({"ok": true, "relaunched": rel})
+}
+
+// ---------------- 账号库备份：口令加密导出 / 导入（.zhb） ----------------
+// PBKDF2-HMAC-SHA256(120k) + AES-256-GCM；解决 DPAPI 快照换机不可解的问题：
+// 导出文件凭口令即可在任何机器导入恢复账号
+
+fn bundle_key(password: &str, salt: &[u8]) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    pbkdf2::pbkdf2_hmac::<sha2::Sha256>(password.as_bytes(), salt, 120_000, &mut out);
+    out
+}
+
+#[tauri::command]
+fn export_bundle(password: String) -> serde_json::Value {
+    if password.chars().count() < 6 { return json!({"ok": false, "error": "口令至少 6 位"}); }
+    let mut accounts = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(profiles_dir()) {
+        for e in rd.flatten() {
+            if let Some(creds) = read_snapshot_value(&e.path()) {
+                if creds.get("zcodejwttoken").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false) {
+                    let meta = read_json(&e.path().join("meta.json")).ok().unwrap_or(json!({}));
+                    accounts.push(json!({
+                        "label": meta.get("label").and_then(|v| v.as_str()).unwrap_or(e.file_name().to_string_lossy().as_ref()),
+                        "provider": meta.get("provider").and_then(|v| v.as_str()).unwrap_or(""),
+                        "credentials": creds,
+                    }));
+                }
+            }
+        }
+    }
+    if accounts.is_empty() { return json!({"ok": false, "error": "账号库为空"}); }
+    let bundle = json!({"format": "zcode-hub-bundle", "version": 1, "exported_at": chrono::Utc::now().to_rfc3339(), "accounts": accounts});
+    let plain = match serde_json::to_vec(&bundle) { Ok(p) => p, Err(e) => return json!({"ok": false, "error": e.to_string()}) };
+    let salt: [u8; 16] = rand::random();
+    let iv: [u8; 12] = rand::random();
+    let key = bundle_key(&password, &salt);
+    let cipher = match Aes256Gcm::new_from_slice(&key) { Ok(c) => c, Err(e) => return json!({"ok": false, "error": e.to_string()}) };
+    let ct = match cipher.encrypt(Nonce::from_slice(&iv), plain.as_ref()) { Ok(c) => c, Err(e) => return json!({"ok": false, "error": e.to_string()}) };
+    let engine = base64::engine::general_purpose::STANDARD;
+    let mut raw = Vec::new();
+    raw.extend_from_slice(&salt); raw.extend_from_slice(&iv); raw.extend_from_slice(&ct);
+    let desktop = dirs::desktop_dir().or_else(dirs::home_dir).unwrap_or_else(|| PathBuf::from("."));
+    let fname = format!("zcode-hub-backup-{}.zhb", chrono::Local::now().format("%Y%m%d-%H%M%S"));
+    let out = desktop.join(&fname);
+    if let Err(e) = std::fs::write(&out, format!("ZHB1:{}", engine.encode(raw))) {
+        return json!({"ok": false, "error": e.to_string()});
+    }
+    json!({"ok": true, "path": out.display().to_string(), "accounts": accounts.len()})
+}
+
+#[tauri::command]
+fn import_bundle(path: String, password: String) -> serde_json::Value {
+    let raw = match std::fs::read_to_string(&path) { Ok(r) => r, Err(e) => return json!({"ok": false, "error": format!("读取失败: {}", e)}) };
+    let body = match raw.trim().strip_prefix("ZHB1:") { Some(b) => b, None => return json!({"ok": false, "error": "不是 ZCode Hub 备份文件"}) };
+    let engine = base64::engine::general_purpose::STANDARD;
+    let data = match engine.decode(body.trim()) { Ok(d) => d, Err(_) => return json!({"ok": false, "error": "文件损坏"}) };
+    if data.len() < 28 + 16 { return json!({"ok": false, "error": "文件损坏"}); }
+    let (salt, rest) = data.split_at(16);
+    let (iv, ct) = rest.split_at(12);
+    let key = bundle_key(&password, salt);
+    let cipher = match Aes256Gcm::new_from_slice(&key) { Ok(c) => c, Err(e) => return json!({"ok": false, "error": e.to_string()}) };
+    let plain = match cipher.decrypt(Nonce::from_slice(iv), ct) { Ok(p) => p, Err(_) => return json!({"ok": false, "error": "口令错误或文件损坏"}) };
+    let bundle: Value = match serde_json::from_slice(&plain) { Ok(b) => b, Err(_) => return json!({"ok": false, "error": "文件损坏"}) };
+    if bundle.get("format").and_then(|v| v.as_str()) != Some("zcode-hub-bundle") {
+        return json!({"ok": false, "error": "不是 ZCode Hub 备份文件"});
+    }
+    let mut added = 0u64; let mut skipped = 0u64;
+    if let Some(list) = bundle.get("accounts").and_then(|v| v.as_array()) {
+        for a in list {
+            let creds = a.get("credentials").cloned().unwrap_or(json!({}));
+            let has_jwt = creds.get("zcodejwttoken").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false);
+            if !has_jwt { skipped += 1; continue; }
+            let label = a.get("label").and_then(|v| v.as_str()).unwrap_or("imported").to_string();
+            let provider = a.get("provider").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let safe: String = label.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '@' { c } else { '_' }).collect();
+            let dir = profiles_dir().join(&safe);
+            if dir.exists() { skipped += 1; continue; }
+            let _ = std::fs::create_dir_all(&dir);
+            if write_snapshot(&dir, &creds).is_ok() {
+                let _ = write_json(&dir.join("meta.json"), &json!({"label": label, "provider": provider, "captured_at": chrono::Utc::now().to_rfc3339()}));
+                added += 1;
+            } else { skipped += 1; }
+        }
+    }
+    json!({"ok": true, "added": added, "skipped": skipped})
 }
 
 #[tauri::command]
@@ -986,6 +1106,7 @@ pub fn run() {
             oauth_start, oauth_status, oauth_open,
             check_benefits, check_all_benefits, get_settings, set_settings,
             win_minimize, win_toggle_maximize, win_hide, win_start_drag,
+            export_bundle, import_bundle,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
