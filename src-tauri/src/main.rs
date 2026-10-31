@@ -200,6 +200,104 @@ fn write_live_device_mid(mid: &str) {
     let _ = write_json(&p, &v);
 }
 
+// arms_uid：阿里云 RUM 遥测的用户标识，存于 %APPDATA% 下 ZCode 的 rum-electron-store/*.json 的 _arms_uid。
+// 与 deviceMid 同策略：每账号独立，首次采纳当前值（未被占用时），否则生成新的。
+const ARMS_DEFAULT_STORE_FILE: &str = "ZGVmYXVsdA.json";
+
+fn new_arms_uid() -> String {
+    use rand::Rng;
+    const ALPHABET: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    let mut rng = rand::thread_rng();
+    let suffix: String = (0..16).map(|_| ALPHABET[rng.gen::<usize>() % 36] as char).collect();
+    format!("uid_{}", suffix)
+}
+
+fn arms_store_dirs() -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        let base = PathBuf::from(&appdata);
+        for name in ["ZCode", "zcode", "ZCode Preview", "ZCode Dev"] {
+            out.push(base.join(name).join("rum-electron-store"));
+        }
+        if let Ok(rd) = std::fs::read_dir(&base) {
+            for e in rd.flatten() {
+                let n = e.file_name().to_string_lossy().to_lowercase();
+                if n.starts_with("zcode") {
+                    let d = e.path().join("rum-electron-store");
+                    if d.is_dir() && !out.contains(&d) { out.push(d); }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn read_live_arms_uid() -> Option<String> {
+    for d in arms_store_dirs() {
+        if let Ok(rd) = std::fs::read_dir(&d) {
+            let mut files: Vec<PathBuf> = rd.flatten().map(|e| e.path())
+                .filter(|p| p.extension().map(|x| x == "json").unwrap_or(false)).collect();
+            files.sort_by_key(|p| !p.file_name().map(|n| n == ARMS_DEFAULT_STORE_FILE).unwrap_or(false));
+            for f in files {
+                if let Ok(s) = std::fs::read_to_string(&f) {
+                    if let Ok(v) = serde_json::from_str::<Value>(&s) {
+                        if let Some(u) = v.get("_arms_uid").and_then(|u| u.as_str()) {
+                            if !u.trim().is_empty() { return Some(u.to_string()); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn write_live_arms_uid(uid: &str) {
+    let mut first_err: Option<String> = None;
+    for d in arms_store_dirs() {
+        let mut jsons: Vec<PathBuf> = std::fs::read_dir(&d).map(|rd| rd.flatten().map(|e| e.path())
+            .filter(|p| p.extension().map(|x| x == "json").unwrap_or(false)).collect()).unwrap_or_default();
+        if jsons.is_empty() {
+            let _ = std::fs::create_dir_all(&d);
+            jsons.push(d.join(ARMS_DEFAULT_STORE_FILE));
+        }
+        for f in jsons {
+            let mut v: Value = std::fs::read_to_string(&f).ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_else(|| json!({}));
+            if !v.is_object() { v = json!({}); }
+            if v.get("_arms_uid").and_then(|u| u.as_str()) == Some(uid) && v.get("_arms_session").is_none() { continue; }
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("_arms_uid".into(), json!(uid));
+                obj.remove("_arms_session");
+                if let Err(e) = write_json(&f, &v) { first_err.get_or_insert(e); }
+            }
+        }
+    }
+    if let Some(e) = first_err { eprintln!("arms_uid 写回失败(忽略): {}", e); }
+}
+
+fn ensure_profile_arms_uid(dir: &PathBuf, meta: &mut Value) -> String {
+    if let Some(u) = meta.get("arms_uid").and_then(|v| v.as_str()) {
+        if !u.trim().is_empty() { return u.to_string(); }
+    }
+    let mut taken: Vec<String> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(profiles_dir()) {
+        for e in rd.flatten() {
+            if &e.path() == dir { continue; }
+            if let Ok(m) = read_json(&e.path().join("meta.json")) {
+                if let Some(u) = m.get("arms_uid").and_then(|v| v.as_str()) { taken.push(u.to_string()); }
+            }
+        }
+    }
+    let uid = match read_live_arms_uid() {
+        Some(u) if !taken.contains(&u) => u,
+        _ => new_arms_uid(),
+    };
+    meta["arms_uid"] = json!(uid);
+    uid
+}
+
 fn sync_provider_family_domain(provider: &str) {
     if provider != "zai" && provider != "bigmodel" { return; }
     let p = v2_dir().join("setting.json");
@@ -486,6 +584,7 @@ fn capture_profile(name: Option<String>) -> serde_json::Value {
         .and_then(|s| decrypt_value(s).ok()).unwrap_or_default();
     let mut meta = json!({"label": label, "provider": provider, "captured_at": chrono::Utc::now().to_rfc3339()});
     let _mid = ensure_profile_device_mid(&dd, &mut meta);
+    let _auid = ensure_profile_arms_uid(&dd, &mut meta);
     let _ = write_json(&dd.join("meta.json"), &meta);
     json!({"ok": true, "name": fname, "label": label})
 }
@@ -548,8 +647,10 @@ fn switch_profile(key: String) -> serde_json::Value {
     let mut meta = read_json(&prof_dir.join("meta.json")).ok()
         .unwrap_or_else(|| json!({"label": key, "provider": fam}));
     let mid = ensure_profile_device_mid(&prof_dir, &mut meta);
+    let auid = ensure_profile_arms_uid(&prof_dir, &mut meta);
     let _ = write_json(&prof_dir.join("meta.json"), &meta);
     write_live_device_mid(&mid);
+    write_live_arms_uid(&auid);
     // 客户端会读套餐缓存，切换后必须清掉避免上一账号的套餐状态残留
     let _ = std::fs::remove_file(v2_dir().join("coding-plan-cache.json"));
     // 客户端会读套餐缓存，切换后必须清掉避免上一账号的套餐状态残留
@@ -817,6 +918,7 @@ fn _oauth_worker(provider: String, poll_token: String) {
         let _ = write_snapshot(&prof_dir, &serde_json::to_value(&encrypted).unwrap_or(json!({})));
         let mut meta = json!({"label": label, "provider": provider, "captured_at": chrono::Utc::now().to_rfc3339()});
         let _mid = ensure_profile_device_mid(&prof_dir, &mut meta);
+        let _auid = ensure_profile_arms_uid(&prof_dir, &mut meta);
         let _ = write_json(&prof_dir.join("meta.json"), &meta);
         sync_provider_family_domain(&provider);
         set_oauth(json!({"status":"ready","label": label, "provider": provider, "name": safe, "warning": warning}));
