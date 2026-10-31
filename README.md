@@ -53,6 +53,10 @@ npx --yes @tauri-apps/cli build --bundles nsis
 
 [MIT](LICENSE)
 
+## 贡献
+
+欢迎 Issue / PR。开发环境搭建、防泄密钩子配置、测试与发布流程见 [CONTRIBUTING.md](CONTRIBUTING.md)；安全 issue 请走 [SECURITY.md](SECURITY.md) 的私下渠道。
+
 ## Roadmap
 
 - [ ] macOS / Linux 移植（当前深度使用 Win32：DPAPI / taskkill / ShellExecuteW 等；计划公开仓库后借助免费三平台 CI 逐模块移植并验证）
