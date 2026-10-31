@@ -8,7 +8,7 @@ FAIL=0
 ok()  { echo "  ✓ $1"; }
 bad() { echo "  ✗ $1"; FAIL=1; }
 
-PY=$(command -v python3 || command -v python)
+PY=$(command -v python || command -v python3)  # python 优先：Windows 的 python3 常是商店空壳 stub
 CONF_VER=$("$PY" -c "import json;print(json.load(open('src-tauri/tauri.conf.json',encoding='utf-8'))['version'])" 2>/dev/null)
 CARGO_VER=$(grep -m1 '^version' src-tauri/Cargo.toml | sed 's/version *= *\"\(.*\)\"/\1/')
 
