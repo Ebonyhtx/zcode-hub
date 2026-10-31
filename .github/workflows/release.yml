@@ -43,7 +43,7 @@ jobs:
             version = $ver
             notes = "ZCode Hub v$ver"
             pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-            platforms = [ordered]@{ "windows-x86_64" = [ordered]@{ signature = $signature; url = "https://github.com/Ebonyhtx/zcode-hub/releases/latest/download/$($exe.Name)" } }
+            platforms = [ordered]@{ "windows-x86_64" = [ordered]@{ signature = $signature; url = "https://github.com/Ebonyhtx/zcode-hub/releases/latest/download/$($exe.Name -replace " ",".")" } }
           }
           $json | ConvertTo-Json -Depth 5 | Set-Content "src-tauri/target/release/bundle/nsis/latest.json" -Encoding utf8
 
