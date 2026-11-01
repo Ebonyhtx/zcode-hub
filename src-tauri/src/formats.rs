@@ -185,6 +185,78 @@ pub fn write_arms_uid_in(dirs: &[PathBuf], uid: &str) -> Option<String> {
     first_err
 }
 
+// --------------- 格式兼容探测（客户端升级防静默破坏） ---------------
+
+/// credentials.json 的已知顶层键；客户端未来新增的键一律容忍并记 note，不报错
+pub const KNOWN_CRED_KEYS: [&str; 8] = [
+    FIELD_TOKEN,
+    FIELD_ACTIVE_PROVIDER,
+    "oauth:zai:access_token", "oauth:zai:refresh_token", "oauth:zai:user_info",
+    "oauth:bigmodel:access_token", "oauth:bigmodel:refresh_token", "oauth:bigmodel:user_info",
+];
+
+#[derive(Default, Debug, Clone, serde::Serialize)]
+pub struct FormatProbe {
+    /// 结构性异常：缺失必需键 / 不可解析。非空 = 不宜整文件替换，应走安全模式
+    pub errors: Vec<String>,
+    /// 容忍性观察（未知字段、文件缺失等），仅供展示
+    pub notes: Vec<String>,
+}
+
+impl FormatProbe {
+    pub fn ok(&self) -> bool { self.errors.is_empty() }
+}
+
+/// 探测当前凭据对象；`None` 表示文件缺失或不可解析
+pub fn probe_credentials(creds: Option<&Value>) -> FormatProbe {
+    let mut p = FormatProbe::default();
+    let Some(c) = creds else {
+        p.errors.push("credentials.json 缺失或无法解析".into());
+        return p;
+    };
+    let Some(obj) = c.as_object() else {
+        p.errors.push("credentials.json 结构异常（顶层非对象）".into());
+        return p;
+    };
+    let token_ok = c.get(FIELD_TOKEN).and_then(|v| v.as_str())
+        .map(|s| !s.trim().is_empty()).unwrap_or(false);
+    if !token_ok {
+        p.errors.push(format!("缺少必需键 {}", FIELD_TOKEN));
+    }
+    for k in obj.keys() {
+        if !KNOWN_CRED_KEYS.contains(&k.as_str()) {
+            p.notes.push(format!("未知字段 {}（已容忍）", k));
+        }
+    }
+    p
+}
+
+/// 探测 setting.json（宽松：可解析且为对象即可，无必需键）
+pub fn probe_setting(setting: Option<&Value>) -> FormatProbe {
+    let mut p = FormatProbe::default();
+    match setting {
+        None => p.notes.push("setting.json 缺失（首次运行属正常）".into()),
+        Some(s) if !s.is_object() => p.errors.push("setting.json 结构异常（顶层非对象）".into()),
+        _ => {}
+    }
+    p
+}
+
+/// 兼容降级：仅替换 `zcodejwttoken`，其余字段一律不动。
+/// 存档里 token 的 enc:v1 密文本机可解（字段密钥与客户端同源派生），无需解密再加密。
+/// 当前凭据结构异常 / 源无有效 token 时拒绝执行。
+pub fn merge_token_only(live: &mut Value, source: &Value) -> Result<(), String> {
+    let tok = source.get(FIELD_TOKEN).and_then(|v| v.as_str())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .ok_or("源存档缺少有效 token")?;
+    if !live.is_object() {
+        return Err("当前凭据结构异常，拒绝合并——请手动备份后重试".into());
+    }
+    live[FIELD_TOKEN] = json!(tok);
+    Ok(())
+}
+
 // --------------- 通用 JSON IO（原子写） ---------------
 
 pub fn read_json(path: &Path) -> Result<Value, String> {
@@ -360,6 +432,54 @@ mod tests {
         // default 文件优先命中
         assert_eq!(read_arms_uid_in(std::slice::from_ref(&d1)), Some("uid_demo2".into()));
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn probe_tolerates_unknown_and_flags_missing_token() {
+        // 完整 fixture：ok，未知字段只记 note
+        let p = probe_credentials(Some(&zai_creds()));
+        assert!(p.ok(), "errors: {:?}", p.errors);
+        assert!(p.notes.iter().any(|n| n.contains("unknown_future_field")));
+        // 缺 token → error
+        let mut no_token = zai_creds();
+        if let Some(o) = no_token.as_object_mut() { o.remove(FIELD_TOKEN); }
+        let p = probe_credentials(Some(&no_token));
+        assert!(!p.ok());
+        assert!(p.errors.iter().any(|e| e.contains(FIELD_TOKEN)));
+        // 文件缺失 → error
+        assert!(!probe_credentials(None).ok());
+        // 顶层非对象 → error
+        assert!(!probe_credentials(Some(&json!("junk"))).ok());
+        // 空对象：token 缺失 → error（空 token 也不合格）
+        assert!(!probe_credentials(Some(&json!({ FIELD_TOKEN: "" }))).ok());
+    }
+
+    #[test]
+    fn probe_setting_lenient() {
+        assert!(probe_setting(Some(&json!({"any": 1}))).ok());
+        assert!(probe_setting(None).ok()); // 缺失只是 note
+        assert!(!probe_setting(Some(&json!("junk"))).ok());
+    }
+
+    #[test]
+    fn merge_token_only_touches_nothing_else() {
+        let source = expired_creds(); // 含 zcodejwttoken
+        let mut live = json!({
+            FIELD_TOKEN: "enc:v1:old.token.value",
+            "oauth:active_provider": "enc:v1:provider-blob",
+            "unknown_future_field": {"keep": true},
+            "other": "preserved"
+        });
+        assert!(merge_token_only(&mut live, &source).is_ok());
+        assert_ne!(live[FIELD_TOKEN], json!("enc:v1:old.token.value"), "token 必须被替换");
+        assert_eq!(live["other"], json!("preserved"), "其余字段必须原样保留");
+        assert_eq!(live["unknown_future_field"]["keep"], json!(true));
+        assert_eq!(live[FIELD_ACTIVE_PROVIDER], json!("enc:v1:provider-blob"), "除 token 外不得改写");
+        // 源无有效 token → 拒绝
+        assert!(merge_token_only(&mut live, &json!({})).is_err());
+        // live 结构异常 → 拒绝
+        let mut junk = json!("not-object");
+        assert!(merge_token_only(&mut junk, &source).is_err());
     }
 
     #[test]

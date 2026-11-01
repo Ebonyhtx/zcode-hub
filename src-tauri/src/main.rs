@@ -384,6 +384,50 @@ fn zcode_running() -> bool {
 
 // exe 路径基本不变，命中一次就缓存，避免反复拉 PowerShell
 static EXE_CACHE: Mutex<Option<String>> = Mutex::new(None);
+static VERSION_CACHE: Mutex<Option<(i64, Option<String>)>> = Mutex::new(None);
+
+// Hub 对客户端文件格式的知识锚定在 3.17.x；客户端 major.minor 变化即提示兼容风险
+const SUPPORTED_CLIENT_VERSION: &str = "3.17";
+
+fn zcode_client_version() -> Option<String> {
+    let mut g = VERSION_CACHE.lock().unwrap();
+    let now = chrono::Utc::now().timestamp();
+    if let Some((ts, v)) = g.as_ref() { if now - ts < 3600 { return v.clone(); } }
+    let v = zcode_exe_path().and_then(|exe| {
+        Command::new("powershell").args(["-NoProfile", "-Command",
+            &format!("(Get-Item -LiteralPath '{}').VersionInfo.ProductVersion", exe)])
+            .creation_flags(0x08000000).output().ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())
+    });
+    *g = Some((now, v.clone()));
+    v
+}
+
+fn client_version_supported(detected: &str) -> bool {
+    let dm: Vec<&str> = detected.split('.').take(2).collect();
+    let sm: Vec<&str> = SUPPORTED_CLIENT_VERSION.split('.').collect();
+    dm == sm
+}
+
+// 兼容探测汇总：凭据/设置格式健康度 + 客户端版本。errors 非空 = 建议安全模式。
+fn compat_report() -> serde_json::Value {
+    let live = read_json(&cred_path()).ok();
+    let mut probe = formats::probe_credentials(live.as_ref());
+    let setting = read_json(&home_v2().join("setting.json")).ok();
+    let ps = formats::probe_setting(setting.as_ref());
+    probe.errors.extend(ps.errors);
+    probe.notes.extend(ps.notes);
+    let ver = zcode_client_version();
+    match &ver {
+        Some(v) if !client_version_supported(v) => {
+            probe.errors.push(format!("客户端版本 {} 与已验证版本 {} 不同，文件格式可能已变化", v, SUPPORTED_CLIENT_VERSION));
+        }
+        Some(_) => {}
+        None => probe.notes.push("未检测到 ZCode 客户端版本（未安装或未指定路径）".into()),
+    }
+    json!({"ok": probe.ok(), "errors": probe.errors, "notes": probe.notes, "zcode_version": ver})
+}
 static APP_HANDLE: Mutex<Option<tauri::AppHandle>> = Mutex::new(None);
 static QUOTA_CACHE: Mutex<Option<std::collections::HashMap<String, (i64, Value)>>> = Mutex::new(None);
 static HTTP: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
@@ -591,7 +635,7 @@ fn get_state() -> serde_json::Value {
     }
     json!({ "current_label": cur_label, "current_provider": cur_provider, "profiles": profiles, "zcode_running": zcode_running(), "zcode_exe": zcode_exe_path().unwrap_or_default(),
             "settings": load_settings(), "benefits": benefits, "last_check": *LAST_CHECK.lock().unwrap(),
-            "version": env!("CARGO_PKG_VERSION"), "autostart": autostart_enabled() })
+            "version": env!("CARGO_PKG_VERSION"), "autostart": autostart_enabled(), "compat": compat_report() })
 }
 
 #[tauri::command]
@@ -649,6 +693,44 @@ fn switch_profile(key: String, hot: Option<bool>) -> serde_json::Value {
     let want_hot = hot.unwrap_or(false)
         && load_settings().get("hot_switch").and_then(|v| v.as_bool()).unwrap_or(false)
         && was;
+    // 安全模式：格式探测异常或用户显式开启时，只替换 token、不整文件替换、不动设备身份。
+    // 当前无凭据文件时不拦截（没有可被破坏的现状，走常规路径）。
+    let live_creds = read_json(&cur).ok();
+    let live_probe_bad = live_creds.as_ref()
+        .map(|v| !formats::probe_credentials(Some(v)).ok())
+        .unwrap_or(false);
+    let safe_requested = load_settings().get("safe_mode").and_then(|v| v.as_bool()).unwrap_or(false);
+    if (safe_requested || live_probe_bad) && live_creds.is_some() {
+        // 先把当前登录保鲜回其存档（与热切换同策略，防丢号）
+        if let Some(cur_v) = live_creds.as_ref() {
+            if cur_v.get(formats::FIELD_TOKEN).and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false) {
+                let cl = account_label(cur_v);
+                let mut known_dir: Option<PathBuf> = None;
+                if let Ok(rd) = std::fs::read_dir(profiles_dir()) {
+                    for e in rd.flatten() {
+                        if read_snapshot_value(&e.path()).map(|c| account_label(&c)) == Some(cl.clone()) {
+                            known_dir = Some(e.path()); break;
+                        }
+                    }
+                }
+                if let Some(kd) = known_dir.as_ref() { let _ = write_snapshot(kd, cur_v); }
+            }
+        }
+        let Some(mut merged) = live_creds.clone() else {
+            return json!({"ok": false, "error": "当前无有效凭据，安全模式无法合并"});
+        };
+        if let Err(e) = formats::merge_token_only(&mut merged, &prof_v) {
+            return json!({"ok": false, "error": e});
+        }
+        if !hot_swap_verified(&cur, &merged) {
+            return json!({"ok": false, "error": "安全模式写入验证失败，已保持原状"});
+        }
+        let fam = prof_v.get(formats::FIELD_ACTIVE_PROVIDER).and_then(|v| v.as_str())
+            .and_then(|s| decrypt_value(s).ok()).unwrap_or_default();
+        sync_provider_family_domain(&fam);
+        let _ = std::fs::remove_file(v2_dir().join("coding-plan-cache.json"));
+        return json!({"ok": true, "hot": true, "safe": true, "relaunched": false});
+    }
     if want_hot {
         // 热切换：不杀客户端，直接换凭据并回读验证；验证失败自动回退重启路径
         if let Ok(cur_v) = read_json(&cur) {
@@ -1120,7 +1202,7 @@ fn config_path() -> PathBuf { app_data_dir().join("hub-config.json") }
 fn load_settings() -> Value {
     let mut st = SETTINGS.lock().unwrap();
     if st.is_none() {
-        *st = Some(read_json(&config_path()).unwrap_or(json!({"auto_check_minutes": 15, "notify_enabled": true, "hot_switch": false})));
+        *st = Some(read_json(&config_path()).unwrap_or(json!({"auto_check_minutes": 15, "notify_enabled": true, "hot_switch": false, "safe_mode": false})));
     }
     st.clone().unwrap()
 }
@@ -1258,11 +1340,12 @@ fn check_all_benefits() -> serde_json::Value {
 fn get_settings() -> serde_json::Value { load_settings() }
 
 #[tauri::command]
-fn set_settings(minutes: i64, notify_enabled: Option<bool>, zcode_path: Option<String>, hot_switch: Option<bool>) -> serde_json::Value {
+fn set_settings(minutes: i64, notify_enabled: Option<bool>, zcode_path: Option<String>, hot_switch: Option<bool>, safe_mode: Option<bool>) -> serde_json::Value {
     let mut s = load_settings();
     s["auto_check_minutes"] = json!(minutes.clamp(0, 1440));
     s["notify_enabled"] = json!(notify_enabled.unwrap_or(true));
     if let Some(h) = hot_switch { s["hot_switch"] = json!(h); }
+    if let Some(sm) = safe_mode { s["safe_mode"] = json!(sm); }
     let zp = zcode_path.map(|p| p.trim().trim_matches('"').to_string()).unwrap_or_default();
     if zp.is_empty() {
         s["zcode_path"] = json!(null);
