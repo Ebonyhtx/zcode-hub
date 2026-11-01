@@ -70,7 +70,8 @@ npx --yes @tauri-apps/cli build --bundles nsis
 
 ## Roadmap
 
-- [ ] macOS / Linux 移植（当前深度使用 Win32：DPAPI / taskkill / ShellExecuteW 等；计划公开仓库后借助免费三平台 CI 逐模块移植并验证）
+- [x] 平台抽象第 0 期：Windows 专属代码收敛至 `platform.rs`，CI 三平台编译 + 纯逻辑测试
+- [ ] macOS / Linux 实移植（等真实需求信号；macOS 需开发者账号签名公证）
 - [ ] 签名自动更新依赖公开 Release 通道
 - [ ] 多语言扩展开放
 
