@@ -13,7 +13,8 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::Manager;
 
-const CRED_FILE: &str = "credentials.json";
+mod formats;
+use formats::{read_json, write_json, CRED_FILE, ENC_PREFIX};
 
 // 账号标识只允许目录名用字符；阻断 ../、绝对路径等穿越（delete/switch/fetch 都是 key 拼路径）
 fn safe_key(key: &str) -> Result<(), String> {
@@ -133,9 +134,14 @@ fn write_snapshot(dir: &Path, v: &Value) -> Result<(), String> {
     let ct = cipher.encrypt(Nonce::from_slice(&iv), plain.as_ref()).map_err(|e| e.to_string())?;
     let engine = base64::engine::general_purpose::STANDARD;
     let body = format!("{}{}.{}", SNAP_MAGIC, engine.encode(iv), engine.encode(ct));
-    std::fs::write(dir.join("credentials.snap"), body).map_err(|e| e.to_string())?;
-    let _ = std::fs::remove_file(dir.join(CRED_FILE)); // 旧格式副本不再保留
-    Ok(())
+    // 原子写（与 write_json 同策略）：进程被杀也不会留下半截快照
+    let _ = std::fs::create_dir_all(dir);
+    let tmp = dir.join("credentials.hub-tmp");
+    std::fs::write(&tmp, body).map_err(|e| e.to_string())?;
+    match std::fs::rename(&tmp, dir.join("credentials.snap")) {
+        Ok(()) => { let _ = std::fs::remove_file(dir.join(CRED_FILE)); Ok(()) } // 旧格式副本不再保留
+        Err(e) => { let _ = std::fs::remove_file(&tmp); Err(e.to_string()) }
+    }
 }
 
 fn read_snapshot_value(dir: &Path) -> Option<Value> {
@@ -168,9 +174,8 @@ fn read_snapshot_value(dir: &Path) -> Option<Value> {
 // 否则生成新的 UUID；切换时写进客户端 telemetry-state.json。
 // 效果：不同账号在服务端各自呈现独立的设备标识，互不关联。
 fn live_device_mid() -> Option<String> {
-    let v: Value = std::fs::read_to_string(v2_dir().join("telemetry-state.json")).ok()
-        .and_then(|s| serde_json::from_str(&s).ok())?;
-    v.get("deviceMid").and_then(|m| m.as_str()).map(String::from).filter(|m| !m.trim().is_empty())
+    let v = read_json(&v2_dir().join("telemetry-state.json")).ok()?;
+    formats::read_device_mid(&v)
 }
 
 fn ensure_profile_device_mid(dir: &PathBuf, meta: &mut Value) -> String {
@@ -196,25 +201,12 @@ fn ensure_profile_device_mid(dir: &PathBuf, meta: &mut Value) -> String {
 
 fn write_live_device_mid(mid: &str) {
     let p = v2_dir().join("telemetry-state.json");
-    let mut v: Value = std::fs::read_to_string(&p).ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_else(|| json!({}));
-    if !v.is_object() { v = json!({}); }
-    if v.get("deviceMid").and_then(|m| m.as_str()) == Some(mid) { return; }
-    v["deviceMid"] = json!(mid);
-    let _ = write_json(&p, &v);
+    let mut v = read_json(&p).unwrap_or_else(|_| json!({}));
+    if formats::set_device_mid(&mut v, mid) { let _ = write_json(&p, &v); }
 }
 
 // arms_uid：阿里云 RUM 遥测的用户标识，存于 %APPDATA% 下 ZCode 的 rum-electron-store/*.json 的 _arms_uid。
 // 与 deviceMid 同策略：每账号独立，首次采纳当前值（未被占用时），否则生成新的。
-const ARMS_DEFAULT_STORE_FILE: &str = "ZGVmYXVsdA.json";
-
-fn new_arms_uid() -> String {
-    const ALPHABET: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
-    let suffix: String = (0..16).map(|_| ALPHABET[rand::random_range(0..36)] as char).collect();
-    format!("uid_{}", suffix)
-}
-
 fn arms_store_dirs() -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     if let Ok(appdata) = std::env::var("APPDATA") {
@@ -236,48 +228,13 @@ fn arms_store_dirs() -> Vec<PathBuf> {
 }
 
 fn read_live_arms_uid() -> Option<String> {
-    for d in arms_store_dirs() {
-        if let Ok(rd) = std::fs::read_dir(&d) {
-            let mut files: Vec<PathBuf> = rd.flatten().map(|e| e.path())
-                .filter(|p| p.extension().map(|x| x == "json").unwrap_or(false)).collect();
-            files.sort_by_key(|p| !p.file_name().map(|n| n == ARMS_DEFAULT_STORE_FILE).unwrap_or(false));
-            for f in files {
-                if let Ok(s) = std::fs::read_to_string(&f) {
-                    if let Ok(v) = serde_json::from_str::<Value>(&s) {
-                        if let Some(u) = v.get("_arms_uid").and_then(|u| u.as_str()) {
-                            if !u.trim().is_empty() { return Some(u.to_string()); }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
+    formats::read_arms_uid_in(&arms_store_dirs())
 }
 
 fn write_live_arms_uid(uid: &str) {
-    let mut first_err: Option<String> = None;
-    for d in arms_store_dirs() {
-        let mut jsons: Vec<PathBuf> = std::fs::read_dir(&d).map(|rd| rd.flatten().map(|e| e.path())
-            .filter(|p| p.extension().map(|x| x == "json").unwrap_or(false)).collect()).unwrap_or_default();
-        if jsons.is_empty() {
-            let _ = std::fs::create_dir_all(&d);
-            jsons.push(d.join(ARMS_DEFAULT_STORE_FILE));
-        }
-        for f in jsons {
-            let mut v: Value = std::fs::read_to_string(&f).ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_else(|| json!({}));
-            if !v.is_object() { v = json!({}); }
-            if v.get("_arms_uid").and_then(|u| u.as_str()) == Some(uid) && v.get("_arms_session").is_none() { continue; }
-            if let Some(obj) = v.as_object_mut() {
-                obj.insert("_arms_uid".into(), json!(uid));
-                obj.remove("_arms_session");
-                if let Err(e) = write_json(&f, &v) { first_err.get_or_insert(e); }
-            }
-        }
+    if let Some(e) = formats::write_arms_uid_in(&arms_store_dirs(), uid) {
+        eprintln!("arms_uid 写回失败(忽略): {}", e);
     }
-    if let Some(e) = first_err { eprintln!("arms_uid 写回失败(忽略): {}", e); }
 }
 
 fn ensure_profile_arms_uid(dir: &PathBuf, meta: &mut Value) -> String {
@@ -295,22 +252,19 @@ fn ensure_profile_arms_uid(dir: &PathBuf, meta: &mut Value) -> String {
     }
     let uid = match read_live_arms_uid() {
         Some(u) if !taken.contains(&u) => u,
-        _ => new_arms_uid(),
+        _ => formats::new_arms_uid(),
     };
     meta["arms_uid"] = json!(uid);
     uid
 }
 
 fn sync_provider_family_domain(provider: &str) {
-    if provider != "zai" && provider != "bigmodel" { return; }
     let p = v2_dir().join("setting.json");
     let mut s = match read_json(&p) { Ok(s) => s, Err(_) => return };
-    if s.get("providerFamilyDomain").and_then(|v| v.as_str()) == Some(provider) { return; }
-    s["providerFamilyDomain"] = json!(provider);
-    s["providerFamilyDomainUpdatedAt"] = json!(chrono::Utc::now().timestamp_millis());
-    let _ = write_json(&p, &s);
+    if formats::apply_provider_family_domain(&mut s, provider, chrono::Utc::now().timestamp_millis()) {
+        let _ = write_json(&p, &s);
+    }
 }
-const ENC_PREFIX: &str = "enc:v1:";
 
 // ------------------------------------------------------------------- crypto
 
@@ -329,7 +283,17 @@ fn derive_key(secret: &str) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-fn decrypt_value(encrypted: &str) -> Result<String, String> {
+// 可注入变体：契约测试 / 未来密钥迁移用；enc:v1 的 IV.TAG.CT 布局是铁律 #1，不可动
+fn encrypt_with(key: &[u8; 32], plain: &str) -> Result<String, String> {
+    let iv: [u8; 12] = rand::random();
+    let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| e.to_string())?;
+    let ct = cipher.encrypt(Nonce::from_slice(&iv), plain.as_bytes()).map_err(|e| e.to_string())?;
+    let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    // 布局必须与 decrypt_with 一致：IV.TAG.CT（tag 在中段，密文在末段）
+    Ok(format!("{}{}.{}.{}", ENC_PREFIX, engine.encode(iv), engine.encode(&ct[ct.len()-16..]), engine.encode(&ct[..ct.len()-16])))
+}
+
+fn decrypt_with(key: &[u8; 32], encrypted: &str) -> Result<String, String> {
     let payload = encrypted.strip_prefix(ENC_PREFIX).ok_or("not encrypted")?;
     let parts: Vec<&str> = payload.split('.').collect();
     if parts.len() != 3 { return Err("invalid format".into()); }
@@ -337,13 +301,16 @@ fn decrypt_value(encrypted: &str) -> Result<String, String> {
     let iv = engine.decode(parts[0]).map_err(|e| e.to_string())?;
     let tag = engine.decode(parts[1]).map_err(|e| e.to_string())?;
     let ct = engine.decode(parts[2]).map_err(|e| e.to_string())?;
-    let key = derive_key(&credential_secret());
-    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| e.to_string())?;
+    let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| e.to_string())?;
     let nonce = Nonce::from_slice(&iv);
     let mut combined = ct;
     combined.extend_from_slice(&tag);
     let plain = cipher.decrypt(nonce, combined.as_ref()).map_err(|e| e.to_string())?;
     String::from_utf8(plain).map_err(|e| e.to_string())
+}
+
+fn decrypt_value(encrypted: &str) -> Result<String, String> {
+    decrypt_with(&derive_key(&credential_secret()), encrypted)
 }
 
 // -------------------------------------------------------------------- paths
@@ -354,10 +321,8 @@ fn home_v2() -> PathBuf {
 // setting.json 的 dataBaseDir 若被用户改过，凭据等数据文件跟着走（setting.json 本身留在原处）
 fn v2_dir() -> PathBuf {
     let base = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let root = std::fs::read_to_string(home_v2().join("setting.json")).ok()
-        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .and_then(|v| v.get("dataBaseDir").and_then(|d| d.as_str()).map(|s| s.trim().to_string()))
-        .filter(|s| !s.is_empty())
+    let root = read_json(&home_v2().join("setting.json")).ok()
+        .and_then(|v| formats::data_base_dir(&v))
         .map(PathBuf::from)
         .unwrap_or(base);
     root.join(".zcode").join("v2")
@@ -403,57 +368,10 @@ fn copy_dir_all(src: &PathBuf, dst: PathBuf) -> std::io::Result<()> {
     Ok(())
 }
 
-fn read_json(path: &PathBuf) -> Result<Value, String> {
-    let c = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-    serde_json::from_str(&c).map_err(|e| e.to_string())
-}
-
-fn write_json(path: &PathBuf, v: &Value) -> Result<(), String> {
-    if let Some(p) = path.parent() { std::fs::create_dir_all(p).map_err(|e| e.to_string())?; }
-    let body = serde_json::to_string_pretty(v).map_err(|e| e.to_string())?;
-    // 原子写：临时文件 + rename，进程被杀也不会留下半截 JSON
-    let tmp = path.with_extension("hub-tmp");
-    std::fs::write(&tmp, body).map_err(|e| e.to_string())?;
-    match std::fs::rename(&tmp, path) {
-        Ok(()) => Ok(()),
-        Err(e) => { let _ = std::fs::remove_file(&tmp); Err(e.to_string()) }
-    }
-}
-
 // ------------------------------------------------------------- account label
 
 fn account_label(creds: &Value) -> String {
-    for uk in ["oauth:zai:user_info", "oauth:bigmodel:user_info"] {
-        if let Some(raw) = creds.get(uk).and_then(|v| v.as_str()) {
-            if let Ok(plain) = decrypt_value(raw) {
-                if let Ok(info) = serde_json::from_str::<Value>(&plain) {
-                    for k in ["username", "displayName", "name", "nickname", "email"] {
-                        if let Some(v) = info.get(k).and_then(|v| v.as_str()) { if !v.is_empty() { return v.to_string(); } }
-                    }
-                }
-            }
-        }
-    }
-    if let Some(raw) = creds.get("zcodejwttoken").and_then(|v| v.as_str()) {
-        if let Ok(plain) = decrypt_value(raw) {
-            let parts: Vec<&str> = plain.split('.').collect();
-            if parts.len() >= 2 {
-                let padded = format!("{}{}", parts[1], "=".repeat((4 - parts[1].len() % 4) % 4));
-                if let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&padded) {
-                    if let Ok(claims) = serde_json::from_str::<Value>(&String::from_utf8_lossy(&bytes)) {
-                        for k in ["name", "email", "sub"] {
-                            if let Some(v) = claims.get(k).and_then(|v| v.as_str()) { return v.to_string(); }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    match creds.get("oauth:active_provider").and_then(|v| v.as_str()) {
-        Some(ap) if ap.starts_with("enc:") => "(已加密账号)".into(),
-        Some(ap) => ap.to_string(),
-        _ => "(未知)".into(),
-    }
+    formats::account_label_with(creds, &|s: &str| decrypt_value(s).ok())
 }
 
 // ------------------------------------------------------------------- process
@@ -524,7 +442,7 @@ fn launch_zcode_process(exe: &str) -> bool {
 
 fn telemetry_device_mid() -> String {
     read_json(&v2_dir().join("telemetry-state.json")).ok()
-        .and_then(|v| v.get("deviceMid").and_then(|v| v.as_str()).map(String::from)).unwrap_or_default()
+        .and_then(|v| formats::read_device_mid(&v)).unwrap_or_default()
 }
 
 // ------------------------------------------------------------------- structs
@@ -532,16 +450,9 @@ fn telemetry_device_mid() -> String {
 #[derive(serde::Serialize)]
 struct ProfileInfo { key: String, label: String, captured_at: String, is_current: bool, provider: String, jwt_expired: bool }
 
-// 令牌载荷若带 exp（部分旧格式/未来格式），本地解码判定是否已过期（30s 时钟容忍）
+// 令牌过期判定（30s 时钟容忍）；收敛在 formats.rs，兼容明文与 enc:v1 两种存法
 fn jwt_expired(creds: &Value) -> bool {
-    let Some(jwt) = creds.get("zcodejwttoken").and_then(|v| v.as_str()) else { return false };
-    let Some(payload) = jwt.split('.').nth(1) else { return false };
-    let mut padded = payload.trim_end_matches('=').to_string();
-    while padded.len() % 4 != 0 { padded.push('='); }
-    let Ok(bytes) = base64::engine::general_purpose::URL_SAFE.decode(padded.as_bytes()) else { return false };
-    let Ok(v) = serde_json::from_slice::<Value>(&bytes) else { return false };
-    let Some(exp) = v.get("exp").and_then(|e| e.as_i64()) else { return false };
-    exp <= chrono::Utc::now().timestamp() + 30
+    formats::jwt_expired_with(creds, &|s: &str| decrypt_value(s).ok(), chrono::Utc::now().timestamp(), 30)
 }
 
 fn startup_lnk() -> PathBuf {
@@ -643,7 +554,7 @@ fn get_state() -> serde_json::Value {
     let cur_label = if cur.exists() { read_json(&cur).map(|c| account_label(&c)).unwrap_or("(err)".into()) } else { "(未登录)".into() };
     let cur_provider = if cur.exists() {
         read_json(&cur).ok()
-            .and_then(|c| c.get("oauth:active_provider").and_then(|v| v.as_str()).map(String::from))
+            .and_then(|c| c.get(formats::FIELD_ACTIVE_PROVIDER).and_then(|v| v.as_str()).map(String::from))
             .and_then(|s| decrypt_value(&s).ok())
             .unwrap_or_default()
     } else { String::new() };
@@ -663,7 +574,7 @@ fn get_state() -> serde_json::Value {
             let mut provider = meta.get("provider").and_then(|v| v.as_str()).unwrap_or("").to_string();
             if provider.is_empty() {
                 provider = pval.as_ref()
-                    .and_then(|c| c.get("oauth:active_provider").and_then(|v| v.as_str()).map(String::from))
+                    .and_then(|c| c.get(formats::FIELD_ACTIVE_PROVIDER).and_then(|v| v.as_str()).map(String::from))
                     .and_then(|s| decrypt_value(&s).ok())
                     .unwrap_or_default();
             }
@@ -697,7 +608,7 @@ fn capture_profile(name: Option<String>) -> serde_json::Value {
     let dd = profiles_dir().join(&fname);
     let _ = std::fs::create_dir_all(&dd);
     let _ = write_snapshot(&dd, &creds);
-    let provider = creds.get("oauth:active_provider").and_then(|v| v.as_str())
+    let provider = creds.get(formats::FIELD_ACTIVE_PROVIDER).and_then(|v| v.as_str())
         .and_then(|s| decrypt_value(s).ok()).unwrap_or_default();
     let mut meta = json!({"label": label, "provider": provider, "captured_at": chrono::Utc::now().to_rfc3339()});
     let _mid = ensure_profile_device_mid(&dd, &mut meta);
@@ -706,7 +617,7 @@ fn capture_profile(name: Option<String>) -> serde_json::Value {
     json!({"ok": true, "name": fname, "label": label})
 }
 
-fn hot_swap_verified(cur: &PathBuf, prof_v: &Value) -> bool {
+fn hot_swap_verified(cur: &Path, prof_v: &Value) -> bool {
     // 写入后回读两次校验账号身份——客户端若用内存状态覆盖写回则重试，三次失败放弃
     let label = account_label(prof_v);
     for attempt in 0..3u32 {
@@ -741,7 +652,7 @@ fn switch_profile(key: String, hot: Option<bool>) -> serde_json::Value {
     if want_hot {
         // 热切换：不杀客户端，直接换凭据并回读验证；验证失败自动回退重启路径
         if let Ok(cur_v) = read_json(&cur) {
-            if cur_v.get("zcodejwttoken").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false) {
+            if cur_v.get(formats::FIELD_TOKEN).and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false) {
                 let cl = account_label(&cur_v);
                 let mut known_dir: Option<PathBuf> = None;
                 if let Ok(rd) = std::fs::read_dir(profiles_dir()) {
@@ -761,7 +672,7 @@ fn switch_profile(key: String, hot: Option<bool>) -> serde_json::Value {
             }
         }
         if hot_swap_verified(&cur, &prof_v) {
-            let fam = prof_v.get("oauth:active_provider").and_then(|v| v.as_str())
+            let fam = prof_v.get(formats::FIELD_ACTIVE_PROVIDER).and_then(|v| v.as_str())
                 .and_then(|s| decrypt_value(s).ok())
                 .unwrap_or_default();
             sync_provider_family_domain(&fam);
@@ -789,7 +700,7 @@ fn switch_profile(key: String, hot: Option<bool>) -> serde_json::Value {
         // 备份那种垃圾会在账号库里出现 (未知) 空账号（2026-10-31 实际踩过）
         let cur_creds = read_json(&cur).ok();
         let valid_session = cur_creds.as_ref()
-            .map(|c| c.get("zcodejwttoken").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false))
+            .map(|c| c.get(formats::FIELD_TOKEN).and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false))
             .unwrap_or(false);
         let cl = cur_creds.as_ref().map(account_label).unwrap_or_default();
         let mut known_dir: Option<PathBuf> = None;
@@ -820,7 +731,7 @@ fn switch_profile(key: String, hot: Option<bool>) -> serde_json::Value {
         return json!({"ok": false, "error": "替换凭据文件失败，已恢复原文件"});
     }
     // 同步客户端激活家族，否则模型配置/套餐解析会因 domain 不匹配而「请登录」
-    let fam = prof_v.get("oauth:active_provider").and_then(|v| v.as_str())
+    let fam = prof_v.get(formats::FIELD_ACTIVE_PROVIDER).and_then(|v| v.as_str())
         .and_then(|s| decrypt_value(s).ok())
         .unwrap_or_default();
     sync_provider_family_domain(&fam);
@@ -831,8 +742,6 @@ fn switch_profile(key: String, hot: Option<bool>) -> serde_json::Value {
     let _ = write_json(&prof_dir.join("meta.json"), &meta);
     write_live_device_mid(&mid);
     write_live_arms_uid(&auid);
-    // 客户端会读套餐缓存，切换后必须清掉避免上一账号的套餐状态残留
-    let _ = std::fs::remove_file(v2_dir().join("coding-plan-cache.json"));
     // 客户端会读套餐缓存，切换后必须清掉避免上一账号的套餐状态残留
     let _ = std::fs::remove_file(v2_dir().join("coding-plan-cache.json"));
     let rel = if was { exe.as_ref().map(|e| launch_zcode_process(e)).unwrap_or(false) } else { false };
@@ -856,7 +765,7 @@ fn export_bundle(password: String) -> serde_json::Value {
     if let Ok(rd) = std::fs::read_dir(profiles_dir()) {
         for e in rd.flatten() {
             if let Some(creds) = read_snapshot_value(&e.path()) {
-                if creds.get("zcodejwttoken").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false) {
+                if creds.get(formats::FIELD_TOKEN).and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false) {
                     let meta = read_json(&e.path().join("meta.json")).ok().unwrap_or(json!({}));
                     accounts.push(json!({
                         "label": meta.get("label").and_then(|v| v.as_str()).unwrap_or(e.file_name().to_string_lossy().as_ref()),
@@ -907,7 +816,7 @@ fn import_bundle(path: String, password: String) -> serde_json::Value {
     if let Some(list) = bundle.get("accounts").and_then(|v| v.as_array()) {
         for a in list {
             let creds = a.get("credentials").cloned().unwrap_or(json!({}));
-            let has_jwt = creds.get("zcodejwttoken").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false);
+            let has_jwt = creds.get(formats::FIELD_TOKEN).and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false);
             if !has_jwt { skipped += 1; continue; }
             let label = a.get("label").and_then(|v| v.as_str()).unwrap_or("imported").to_string();
             let provider = a.get("provider").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -1081,15 +990,15 @@ fn _oauth_worker(provider: String, poll_token: String) {
         let profile_norm = Value::Object(pnorm);
 
         // 官方凭据键名（见 asar oauthCredentialRepo）：oauth:{provider}:access_token|refresh_token|user_info
-        // + zcodejwttoken + oauth:active_provider
+        // + zcodejwttoken + oauth:active_provider（键名常量与解析逻辑收敛在 formats.rs）
         let mut encrypted = std::collections::HashMap::new();
-        encrypted.insert("oauth:active_provider".to_string(), encrypt_value(&provider));
-        encrypted.insert(format!("oauth:{}:access_token", provider), encrypt_value(&access_token));
+        encrypted.insert(formats::FIELD_ACTIVE_PROVIDER.to_string(), encrypt_value(&provider));
+        encrypted.insert(formats::oauth_field(&provider, "access_token"), encrypt_value(&access_token));
         if !refresh_token.is_empty() {
-            encrypted.insert(format!("oauth:{}:refresh_token", provider), encrypt_value(&refresh_token));
+            encrypted.insert(formats::oauth_field(&provider, "refresh_token"), encrypt_value(&refresh_token));
         }
-        encrypted.insert(format!("oauth:{}:user_info", provider), encrypt_value(&profile_norm.to_string()));
-        encrypted.insert("zcodejwttoken".to_string(), encrypt_value(&token));
+        encrypted.insert(formats::oauth_field(&provider, "user_info"), encrypt_value(&profile_norm.to_string()));
+        encrypted.insert(formats::FIELD_TOKEN.to_string(), encrypt_value(&token));
         let safe = sanitize_label(&label);
         let prof_dir = profiles_dir().join(&safe);
         let _ = std::fs::create_dir_all(&prof_dir);
@@ -1105,14 +1014,7 @@ fn _oauth_worker(provider: String, poll_token: String) {
 }
 
 fn encrypt_value(plain: &str) -> String {
-    let key = derive_key(&credential_secret());
-    let cipher = Aes256Gcm::new_from_slice(&key).unwrap();
-    let iv: [u8; 12] = rand::random();
-    let ct = cipher.encrypt(Nonce::from_slice(&iv), plain.as_bytes()).unwrap();
-    let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    // 布局必须与 decrypt_value 一致：IV.TAG.CT（tag 在中段，密文在末段）
-    format!("{}{}.{}.{}", ENC_PREFIX,
-        engine.encode(iv), engine.encode(&ct[ct.len()-16..]), engine.encode(&ct[..ct.len()-16]))
+    encrypt_with(&derive_key(&credential_secret()), plain).expect("AES encrypt failed")
 }
 
 #[tauri::command]
@@ -1158,7 +1060,7 @@ fn _get_jwt_token(key: &str) -> Result<String, String> {
     } else {
         read_snapshot_value(&profiles_dir().join(key)).ok_or("profile not found")?
     };
-    let raw = creds.get("zcodejwttoken").and_then(|v| v.as_str()).ok_or("no jwt")?;
+    let raw = creds.get(formats::FIELD_TOKEN).and_then(|v| v.as_str()).ok_or("no jwt")?;
     decrypt_value(raw)
 }
 
