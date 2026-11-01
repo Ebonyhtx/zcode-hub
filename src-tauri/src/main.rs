@@ -14,7 +14,14 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::Manager;
 
 mod formats;
+mod audit;
 use formats::{read_json, write_json, CRED_FILE, ENC_PREFIX};
+
+// 审计日志：只记 profile key 与事件结果，best-effort（失败静默，不影响业务）
+fn audit_log(event: &str, key: Option<&str>, detail: serde_json::Value) {
+    let entry = json!({"ts": chrono::Utc::now().to_rfc3339(), "event": event, "key": key, "detail": detail});
+    let _ = audit::audit_append(&audit::audit_path(&app_data_dir()), &entry);
+}
 
 // 账号标识只允许目录名用字符；阻断 ../、绝对路径等穿越（delete/switch/fetch 都是 key 拼路径）
 fn safe_key(key: &str) -> Result<(), String> {
@@ -130,7 +137,7 @@ fn write_snapshot(dir: &Path, v: &Value) -> Result<(), String> {
     let key = snap_key();
     let plain = serde_json::to_vec(v).map_err(|e| e.to_string())?;
     let iv: [u8; 12] = rand::random();
-    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| e.to_string())?;
+    let cipher = Aes256Gcm::new_from_slice(&key[..]).map_err(|e| e.to_string())?;
     let ct = cipher.encrypt(Nonce::from_slice(&iv), plain.as_ref()).map_err(|e| e.to_string())?;
     let engine = base64::engine::general_purpose::STANDARD;
     let body = format!("{}{}.{}", SNAP_MAGIC, engine.encode(iv), engine.encode(ct));
@@ -277,10 +284,11 @@ fn credential_secret() -> String {
     format!("zcode-credential-fallback:win32:{}:{}", home, user)
 }
 
-fn derive_key(secret: &str) -> [u8; 32] {
+// 瞬时派生密钥用 Zeroizing 包裹：作用结束即清零内存；SNAP_KEY 进程级缓存是有意为之（见 DESIGN.md）
+fn derive_key(secret: &str) -> zeroize::Zeroizing<[u8; 32]> {
     let mut hasher = Sha256::new();
     hasher.update(secret.as_bytes());
-    hasher.finalize().into()
+    zeroize::Zeroizing::new(hasher.finalize().into())
 }
 
 // 可注入变体：契约测试 / 未来密钥迁移用；enc:v1 的 IV.TAG.CT 布局是铁律 #1，不可动
@@ -355,6 +363,8 @@ fn migrate_legacy_data() {
     if !config_path().exists() && old_config.exists() {
         let _ = std::fs::copy(&old_config, config_path());
     }
+    // 瞬态回滚副本不应跨启动存在：清掉上次切换可能遗留的明文凭据副本
+    let _ = std::fs::remove_file(v2_dir().join("credentials.json.hub-backup"));
 }
 
 fn copy_dir_all(src: &PathBuf, dst: PathBuf) -> std::io::Result<()> {
@@ -525,7 +535,10 @@ fn set_autostart_internal(enable: bool) -> Result<(), String> {
 #[tauri::command]
 fn set_autostart(enable: bool) -> serde_json::Value {
     match set_autostart_internal(enable) {
-        Ok(()) => json!({"ok": true, "enabled": autostart_enabled()}),
+        Ok(()) => {
+            audit_log("autostart", None, json!({"enabled": enable}));
+            json!({"ok": true, "enabled": autostart_enabled()})
+        }
         Err(e) => json!({"ok": false, "error": e}),
     }
 }
@@ -658,6 +671,7 @@ fn capture_profile(name: Option<String>) -> serde_json::Value {
     let _mid = ensure_profile_device_mid(&dd, &mut meta);
     let _auid = ensure_profile_arms_uid(&dd, &mut meta);
     let _ = write_json(&dd.join("meta.json"), &meta);
+    audit_log("capture", Some(&fname), json!({}));
     json!({"ok": true, "name": fname, "label": label})
 }
 
@@ -720,15 +734,18 @@ fn switch_profile(key: String, hot: Option<bool>) -> serde_json::Value {
             return json!({"ok": false, "error": "当前无有效凭据，安全模式无法合并"});
         };
         if let Err(e) = formats::merge_token_only(&mut merged, &prof_v) {
-            return json!({"ok": false, "error": e});
+            audit_log("switch", Some(&key), json!({"mode": "safe", "result": "fail", "error": e}));
+            return json!({"ok": false, "error": "安全模式合并失败"});
         }
         if !hot_swap_verified(&cur, &merged) {
+            audit_log("switch", Some(&key), json!({"mode": "safe", "result": "fail", "error": "verify_failed"}));
             return json!({"ok": false, "error": "安全模式写入验证失败，已保持原状"});
         }
         let fam = prof_v.get(formats::FIELD_ACTIVE_PROVIDER).and_then(|v| v.as_str())
             .and_then(|s| decrypt_value(s).ok()).unwrap_or_default();
         sync_provider_family_domain(&fam);
         let _ = std::fs::remove_file(v2_dir().join("coding-plan-cache.json"));
+        audit_log("switch", Some(&key), json!({"mode": "safe", "result": "ok"}));
         return json!({"ok": true, "hot": true, "safe": true, "relaunched": false});
     }
     if want_hot {
@@ -766,6 +783,7 @@ fn switch_profile(key: String, hot: Option<bool>) -> serde_json::Value {
             write_live_device_mid(&mid);
             write_live_arms_uid(&auid);
             let _ = std::fs::remove_file(v2_dir().join("coding-plan-cache.json"));
+            audit_log("switch", Some(&key), json!({"mode": "hot", "result": "ok"}));
             return json!({"ok": true, "hot": true, "relaunched": false});
         }
         // 热切换失败 → 落回冷路径（杀进程 + 重启）
@@ -810,8 +828,11 @@ fn switch_profile(key: String, hot: Option<bool>) -> serde_json::Value {
     }
     if write_json(&cur, &prof_v).is_err() {
         let _ = std::fs::copy(v2_dir().join("credentials.json.hub-backup"), &cur);
+        audit_log("switch", Some(&key), json!({"mode": "cold", "result": "fail", "error": "write_failed"}));
         return json!({"ok": false, "error": "替换凭据文件失败，已恢复原文件"});
     }
+    // 瞬态回滚副本：替换成功后使命结束，磁盘不留明文凭据副本
+    let _ = std::fs::remove_file(v2_dir().join("credentials.json.hub-backup"));
     // 同步客户端激活家族，否则模型配置/套餐解析会因 domain 不匹配而「请登录」
     let fam = prof_v.get(formats::FIELD_ACTIVE_PROVIDER).and_then(|v| v.as_str())
         .and_then(|s| decrypt_value(s).ok())
@@ -827,6 +848,7 @@ fn switch_profile(key: String, hot: Option<bool>) -> serde_json::Value {
     // 客户端会读套餐缓存，切换后必须清掉避免上一账号的套餐状态残留
     let _ = std::fs::remove_file(v2_dir().join("coding-plan-cache.json"));
     let rel = if was { exe.as_ref().map(|e| launch_zcode_process(e)).unwrap_or(false) } else { false };
+    audit_log("switch", Some(&key), json!({"mode": "cold", "result": "ok", "relaunched": rel}));
     json!({"ok": true, "relaunched": rel})
 }
 
@@ -834,9 +856,9 @@ fn switch_profile(key: String, hot: Option<bool>) -> serde_json::Value {
 // PBKDF2-HMAC-SHA256(120k) + AES-256-GCM；解决 DPAPI 快照换机不可解的问题：
 // 导出文件凭口令即可在任何机器导入恢复账号
 
-fn bundle_key(password: &str, salt: &[u8]) -> [u8; 32] {
-    let mut out = [0u8; 32];
-    pbkdf2::pbkdf2_hmac::<sha2::Sha256>(password.as_bytes(), salt, 120_000, &mut out);
+fn bundle_key(password: &str, salt: &[u8]) -> zeroize::Zeroizing<[u8; 32]> {
+    let mut out = zeroize::Zeroizing::new([0u8; 32]);
+    pbkdf2::pbkdf2_hmac::<sha2::Sha256>(password.as_bytes(), salt, 120_000, &mut *out);
     out
 }
 
@@ -864,7 +886,7 @@ fn export_bundle(password: String) -> serde_json::Value {
     let salt: [u8; 16] = rand::random();
     let iv: [u8; 12] = rand::random();
     let key = bundle_key(&password, &salt);
-    let cipher = match Aes256Gcm::new_from_slice(&key) { Ok(c) => c, Err(e) => return json!({"ok": false, "error": e.to_string()}) };
+    let cipher = match Aes256Gcm::new_from_slice(&key[..]) { Ok(c) => c, Err(e) => return json!({"ok": false, "error": e.to_string()}) };
     let ct = match cipher.encrypt(Nonce::from_slice(&iv), plain.as_ref()) { Ok(c) => c, Err(e) => return json!({"ok": false, "error": e.to_string()}) };
     let engine = base64::engine::general_purpose::STANDARD;
     let mut raw = Vec::new();
@@ -875,6 +897,7 @@ fn export_bundle(password: String) -> serde_json::Value {
     if let Err(e) = std::fs::write(&out, format!("ZHB1:{}", engine.encode(raw))) {
         return json!({"ok": false, "error": e.to_string()});
     }
+    audit_log("export", None, json!({"accounts": accounts.len()}));
     json!({"ok": true, "path": out.display().to_string(), "accounts": accounts.len()})
 }
 
@@ -888,7 +911,7 @@ fn import_bundle(path: String, password: String) -> serde_json::Value {
     let (salt, rest) = data.split_at(16);
     let (iv, ct) = rest.split_at(12);
     let key = bundle_key(&password, salt);
-    let cipher = match Aes256Gcm::new_from_slice(&key) { Ok(c) => c, Err(e) => return json!({"ok": false, "error": e.to_string()}) };
+    let cipher = match Aes256Gcm::new_from_slice(&key[..]) { Ok(c) => c, Err(e) => return json!({"ok": false, "error": e.to_string()}) };
     let plain = match cipher.decrypt(Nonce::from_slice(iv), ct) { Ok(p) => p, Err(_) => return json!({"ok": false, "error": "口令错误或文件损坏"}) };
     let bundle: Value = match serde_json::from_slice(&plain) { Ok(b) => b, Err(_) => return json!({"ok": false, "error": "文件损坏"}) };
     if bundle.get("format").and_then(|v| v.as_str()) != Some("zcode-hub-bundle") {
@@ -912,6 +935,7 @@ fn import_bundle(path: String, password: String) -> serde_json::Value {
             } else { skipped += 1; }
         }
     }
+    audit_log("import", None, json!({"added": added, "skipped": skipped}));
     json!({"ok": true, "added": added, "skipped": skipped})
 }
 
@@ -920,6 +944,7 @@ fn delete_profile(key: String) -> serde_json::Value {
     if let Err(e) = safe_key(&key) { return denied(e); }
     let d = profiles_dir().join(&key);
     if d.exists() { let _ = std::fs::remove_dir_all(&d); }
+    audit_log("delete", Some(&key), json!({}));
     json!({"ok": true})
 }
 
@@ -1091,6 +1116,7 @@ fn _oauth_worker(provider: String, poll_token: String) {
         let _ = write_json(&prof_dir.join("meta.json"), &meta);
         sync_provider_family_domain(&provider);
         set_oauth(json!({"status":"ready","label": label, "provider": provider, "name": safe, "warning": warning}));
+        audit_log("oauth_add", Some(&safe), json!({"provider": provider}));
         return;
     }
 }
@@ -1357,6 +1383,11 @@ fn set_settings(minutes: i64, notify_enabled: Option<bool>, zcode_path: Option<S
         return json!({"ok": false, "error": format!("路径不存在: {}", zp)});
     }
     let _ = write_json(&config_path(), &s);
+    audit_log("settings", None, json!({
+        "auto_check_minutes": s["auto_check_minutes"], "notify_enabled": s["notify_enabled"],
+        "hot_switch": s["hot_switch"], "safe_mode": s["safe_mode"],
+        "zcode_path_set": !s["zcode_path"].is_null()
+    }));
     *SETTINGS.lock().unwrap() = Some(s);
     *LAST_CHECK.lock().unwrap() = None; // 保存后立即按新周期跑一轮
     json!({"ok": true})
