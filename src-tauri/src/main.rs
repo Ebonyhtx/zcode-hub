@@ -15,6 +15,7 @@ use tauri::Manager;
 
 mod formats;
 mod audit;
+mod history;
 use formats::{read_json, write_json, CRED_FILE, ENC_PREFIX};
 
 // 审计日志：只记 profile key 与事件结果，best-effort（失败静默，不影响业务）
@@ -1191,8 +1192,24 @@ fn fetch_quota(key: String, force: Option<bool>) -> serde_json::Value {
         Ok(r) => match r.json::<Value>() { Ok(j) => json!({"ok": true, "data": j}), Err(e) => json!({"ok": false, "error": e.to_string()}) },
         Err(e) => json!({"ok": false, "error": e.to_string()}),
     };
+    // 成功响应落额度历史（10 分钟节流、30 天保留），供燃尽率预测；失败响应不入库
+    if resp.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+        if let Some(sample) = history::sample_from_quota(&resp, now) {
+            let hp = history::history_path(&app_data_dir(), &key);
+            let _ = history::append_sample(&hp, &sample, now);
+        }
+    }
     QUOTA_CACHE.lock().unwrap().get_or_insert_with(Default::default).insert(key, (now, resp.clone()));
     resp
+}
+
+/// 额度历史 + 燃尽率预测（纯本地文件，无网络）
+#[tauri::command]
+fn quota_history(key: String) -> serde_json::Value {
+    if let Err(e) = safe_key(&key) { return denied(e); }
+    let samples = history::load_history(&history::history_path(&app_data_dir(), &key));
+    let forecast = history::forecast(&samples);
+    json!({"ok": true, "samples": samples.len(), "points": samples, "forecast": forecast})
 }
 
 // 自绘标题栏的窗口控制（decorations:false 后由前端按钮调用）
@@ -1495,7 +1512,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_state, capture_profile, switch_profile, delete_profile,
-            fetch_quota, open_zcode_client,
+            fetch_quota, quota_history, open_zcode_client,
             oauth_start, oauth_status, oauth_open,
             check_benefits, check_all_benefits, get_settings, set_settings,
             win_minimize, win_toggle_maximize, win_hide, win_start_drag,
