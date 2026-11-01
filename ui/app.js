@@ -24,6 +24,9 @@ var I18N = {
     sys_sec: "系统", autostart: "开机自启", autostart_hint: "写入启动文件夹快捷方式",
     hot: "热切换（实验）", hot_hint: "不重启客户端直接换号，失败自动回退",
     hot_note: "热切换不重启客户端：套餐与额度立即按新账号生效，但左下角账号名来自客户端本地缓存，需重启 ZCode 才会更新。",
+    safe_mode: "安全模式", safe_hint: "客户端格式异常或新版本时更稳：切换只替换登录令牌，不整文件替换",
+    compat_banner: "⚠ 客户端兼容性异常：{e}（切换已自动走安全模式）",
+    zcode_ver: "客户端",
     lang: "语言",
     bak_title: "备份 / 导入账号库", bak_sub: "备份文件用口令加密（PBKDF2 + AES-256-GCM），可在任何电脑导入恢复；口令丢失无法找回。",
     export_to: "导出到桌面", bak_ph: "设置口令（≥6 位）", export_btn: "导出 .zhb",
@@ -67,6 +70,9 @@ var I18N = {
     sys_sec: "System", autostart: "Launch at startup", autostart_hint: "Startup-folder shortcut",
     hot: "Hot switch (exp.)", hot_hint: "Switch identity without restarting; falls back on failure",
     hot_note: "Hot switch keeps the client running: plan & quota apply to the new account immediately, but the account name at the client's bottom-left comes from its local cache and only updates after restarting ZCode.",
+    safe_mode: "Safe mode", safe_hint: "Safer when the client format changed: switching replaces only the login token, not the whole file",
+    compat_banner: "⚠ Client compatibility issue: {e} (switching falls back to safe mode)",
+    zcode_ver: "Client",
     lang: "Language",
     bak_title: "Backup / Import accounts", bak_sub: "Bundles are password-encrypted (PBKDF2 + AES-256-GCM) and portable; lost password = lost backup.",
     export_to: "Export to Desktop", bak_ph: "Set password (≥6 chars)", export_btn: "Export .zhb",
@@ -305,6 +311,11 @@ function refresh(done, force) {
     if (document.activeElement !== sel && String(sel.value) !== String(mins)) sel.value = String(mins);
     document.getElementById("notifyTgl").checked = !(st.settings && st.settings.notify_enabled === false);
     document.getElementById("lastCheckTxt").textContent = st.last_check ? t("last_check") + " " + fmtT2(st.last_check) : t("never_checked");
+    var cb = document.getElementById("compatBar");
+    if (st.compat && st.compat.ok === false) {
+      cb.textContent = t("compat_banner", {e: (st.compat.errors || ["?"])[0]});
+      cb.style.display = "block";
+    } else { cb.style.display = "none"; }
     var bens = st.benefits || {};
     Object.keys(bens).forEach(function(k) {
       var c = bens[k] && bens[k].ok ? (bens[k].count || 0) : 0;
@@ -445,6 +456,8 @@ function showCfg() {
     document.getElementById("cfgVer").textContent = "v" + (st.version || "?");
     document.getElementById("autoStartTgl").checked = !!st.autostart;
     document.getElementById("hotTgl").checked = !!(st.settings && st.settings.hot_switch);
+    document.getElementById("safeModeTgl").checked = !!(st.settings && st.settings.safe_mode);
+    document.getElementById("zcodeVer").textContent = st.compat && st.compat.zcode_version ? t("zcode_ver") + " v" + st.compat.zcode_version : "";
     var zp = st.settings && st.settings.zcode_path ? st.settings.zcode_path : "";
     if (document.activeElement !== document.getElementById("zcPath")) document.getElementById("zcPath").value = zp;
     document.getElementById("updTxt").textContent = "";
@@ -466,6 +479,11 @@ function setAutoStart(v) {
 function setHot(v) {
   invoke("set_settings", { minutes: Number(document.getElementById("autoCheckSel").value), hotSwitch: !!v }).then(function() {
     pushToast(t("t_settings_saved"), "ok");
+  }).catch(function(e) { pushToast(String(e), "bad"); });
+}
+function setSafe(v) {
+  invoke("set_settings", { minutes: Number(document.getElementById("autoCheckSel").value), safeMode: !!v }).then(function() {
+    pushToast(t("t_settings_saved"), "ok"); refresh();
   }).catch(function(e) { pushToast(String(e), "bad"); });
 }
 function doCheckUpdate() {
@@ -537,6 +555,7 @@ document.addEventListener("change", function(e) {
   else if (id === "notifyTgl") setNotify(e.target.checked);
   else if (id === "autoStartTgl") setAutoStart(e.target.checked);
   else if (id === "hotTgl") setHot(e.target.checked);
+  else if (id === "safeModeTgl") setSafe(e.target.checked);
   else if (id === "langSel") setLang(e.target.value);
 });
 document.addEventListener("keydown", function(e) { if (e.key === "Escape") { closeAddModal(); document.getElementById("cfgModal").style.display = "none"; document.getElementById("bakModal").style.display = "none"; } });

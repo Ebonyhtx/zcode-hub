@@ -63,6 +63,7 @@ body[data-theme="dark"] .btn:hover{border-color:#3c3e58;box-shadow:0 4px 12px -6
 .btn.warn:hover{border-color:var(--bad);color:var(--bad)}
 
 .setcard{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:10px 14px;margin-bottom:14px;box-shadow:var(--shadow)}
+.compat{display:flex;align-items:center;gap:8px;background:var(--accbg);border:1px solid var(--accbd);color:var(--acc2);border-radius:10px;padding:7px 12px;margin:-6px 0 12px;font-size:11.5px;font-weight:600;line-height:1.5}
 .setrow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .setrow .lbl{font-size:12.5px;color:var(--tx);font-weight:600;display:flex;align-items:center;gap:6px}
 select{background:var(--card2);color:var(--tx);border:1px solid var(--line2);border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer;outline:none;transition:.15s}
