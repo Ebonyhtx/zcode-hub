@@ -16,6 +16,9 @@
 │   └─ 守卫: safe_key 路径穿越校验 / 原子写入 / 泄密扫描                        │
 │  src-tauri/src/formats.rs                  ← 客户端文件格式纯逻辑（注入式）   │
 │   └─ credentials / setting / telemetry-state / arms store + 契约测试        │
+│  src-tauri/src/platform.rs                 ← 平台抽象：Windows 实现 + 占位    │
+│   └─ DPAPI / 进程 / Shell / 自启 / arms 目录（main.rs 零平台符号）           │
+│  src-tauri/src/{audit,history}.rs          ← 本地审计日志 / 额度历史与燃尽率  │
 └──────────────────────────────────────────────────────────────────────────┘
           │ 读/写（仅切换时）                          │ 只读探测
           ▼                                            ▼
@@ -68,6 +71,7 @@
 
 ## 已知限制
 
-- Windows 10/11 x64 专属（跨平台见 README Roadmap）
+- 功能仅 Windows 10/11 x64 可用（CI 已在 ubuntu/macOS 上编译并跑纯逻辑测试，平台占位返回不支持）
 - BigModel 基础套餐额度走智谱自有接口，Hub 只显示 billing/balance 里的桶
 - 热切换为实验特性：依赖客户端不会在切换瞬间写回凭据（冷切换始终可用）
+- 格式兼容知识锚定客户端 3.17.x：客户端 major.minor 变化会触发兼容警告并自动走安全模式切换

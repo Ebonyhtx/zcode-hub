@@ -1,4 +1,4 @@
-#![windows_subsystem = "windows"]
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
@@ -7,8 +7,6 @@ use serde_json::json;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::os::windows::process::CommandExt;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::Manager;
@@ -16,6 +14,7 @@ use tauri::Manager;
 mod formats;
 mod audit;
 mod history;
+mod platform;
 use formats::{read_json, write_json, CRED_FILE, ENC_PREFIX};
 
 // 审计日志：只记 profile key 与事件结果，best-effort（失败静默，不影响业务）
@@ -76,35 +75,7 @@ fn restore_window_state(app: &tauri::App) {
 // ---------------- 快照保护（DPAPI） ----------------
 // 账号快照整包加密：随机密钥经 DPAPI 绑定当前 Windows 用户+机器。
 // 快照文件被拷到别的机器/用户无法解密（区别于 ZCode 自身的可推导 fallback 方案）。
-#[repr(C)]
-struct DataBlob { cb: u32, pb: *mut u8 }
-
-#[link(name = "crypt32")]
-extern "system" {
-    fn CryptProtectData(pIn: *const DataBlob, descr: *const u16, entropy: *const DataBlob, reserved: *mut std::ffi::c_void, prompt: *mut std::ffi::c_void, flags: u32, pOut: *mut DataBlob) -> i32;
-    fn CryptUnprotectData(pIn: *const DataBlob, descr: *mut *mut u16, entropy: *const DataBlob, reserved: *mut std::ffi::c_void, prompt: *mut std::ffi::c_void, flags: u32, pOut: *mut DataBlob) -> i32;
-}
-extern "system" { fn LocalFree(h: *mut std::ffi::c_void) -> *mut std::ffi::c_void; }
-
-const DPAPI_ENTROPY: &[u8] = b"zcode-hub-snapshots-v1";
-
-fn dpapi_operate(plain: &[u8], protect: bool) -> Result<Vec<u8>, String> {
-    let inp = DataBlob { cb: plain.len() as u32, pb: plain.as_ptr() as *mut u8 };
-    let ent = DataBlob { cb: DPAPI_ENTROPY.len() as u32, pb: DPAPI_ENTROPY.as_ptr() as *mut u8 };
-    let mut out = DataBlob { cb: 0, pb: std::ptr::null_mut() };
-    let ok = unsafe {
-        if protect {
-            CryptProtectData(&inp, std::ptr::null(), &ent, std::ptr::null_mut(), std::ptr::null_mut(), 1, &mut out)
-        } else {
-            CryptUnprotectData(&inp, std::ptr::null_mut(), &ent, std::ptr::null_mut(), std::ptr::null_mut(), 1, &mut out)
-        }
-    };
-    if ok == 0 { return Err("DPAPI 调用失败".into()); }
-    let v = unsafe { std::slice::from_raw_parts(out.pb, out.cb as usize).to_vec() };
-    unsafe { LocalFree(out.pb as *mut std::ffi::c_void); }
-    Ok(v)
-}
-
+// DPAPI 调用在 platform.rs（平台抽象第 0 期）。
 static SNAP_KEY: Mutex<Option<Vec<u8>>> = Mutex::new(None);
 
 fn snap_key() -> Vec<u8> {
@@ -116,14 +87,14 @@ fn snap_key() -> Vec<u8> {
         if let Some(b64) = txt.trim().strip_prefix("dpapi:") {
             let engine = base64::engine::general_purpose::STANDARD;
             if let Ok(enc) = engine.decode(b64) {
-                if let Ok(k) = dpapi_operate(&enc, false) { key = k; }
+                if let Ok(k) = platform::dpapi_operate(&enc, false) { key = k; }
             }
         }
     }
     if key.len() != 32 {
         key = (0..32).map(|_| rand::random::<u8>()).collect();
         let engine = base64::engine::general_purpose::STANDARD;
-        if let Ok(enc) = dpapi_operate(&key, true) {
+        if let Ok(enc) = platform::dpapi_operate(&key, true) {
             let _ = std::fs::create_dir_all(app_data_dir());
             let _ = std::fs::write(&f, format!("dpapi:{}", engine.encode(enc)));
         }
@@ -215,25 +186,8 @@ fn write_live_device_mid(mid: &str) {
 
 // arms_uid：阿里云 RUM 遥测的用户标识，存于 %APPDATA% 下 ZCode 的 rum-electron-store/*.json 的 _arms_uid。
 // 与 deviceMid 同策略：每账号独立，首次采纳当前值（未被占用时），否则生成新的。
-fn arms_store_dirs() -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = Vec::new();
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        let base = PathBuf::from(&appdata);
-        for name in ["ZCode", "zcode", "ZCode Preview", "ZCode Dev"] {
-            out.push(base.join(name).join("rum-electron-store"));
-        }
-        if let Ok(rd) = std::fs::read_dir(&base) {
-            for e in rd.flatten() {
-                let n = e.file_name().to_string_lossy().to_lowercase();
-                if n.starts_with("zcode") {
-                    let d = e.path().join("rum-electron-store");
-                    if d.is_dir() && !out.contains(&d) { out.push(d); }
-                }
-            }
-        }
-    }
-    out
-}
+// 目录枚举在 platform.rs（Windows 客户端专属布局）。
+fn arms_store_dirs() -> Vec<PathBuf> { platform::arms_store_dirs() }
 
 fn read_live_arms_uid() -> Option<String> {
     formats::read_arms_uid_in(&arms_store_dirs())
@@ -386,12 +340,9 @@ fn account_label(creds: &Value) -> String {
 }
 
 // ------------------------------------------------------------------- process
+// 进程探测/关闭/启动收敛到 platform.rs（Windows 实现 + 非 Windows 占位）。
 
-fn zcode_running() -> bool {
-    // CREATE_NO_WINDOW：探测命令不能闪黑框（get_state 每 60 秒被 UI 轮询调用一次）
-    Command::new("tasklist").args(["/FI", "IMAGENAME eq ZCode.exe", "/NH"]).creation_flags(0x08000000).output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains("ZCode.exe")).unwrap_or(false)
-}
+fn zcode_running() -> bool { platform::zcode_running() }
 
 // exe 路径基本不变，命中一次就缓存，避免反复拉 PowerShell
 static EXE_CACHE: Mutex<Option<String>> = Mutex::new(None);
@@ -404,13 +355,7 @@ fn zcode_client_version() -> Option<String> {
     let mut g = VERSION_CACHE.lock().unwrap();
     let now = chrono::Utc::now().timestamp();
     if let Some((ts, v)) = g.as_ref() { if now - ts < 3600 { return v.clone(); } }
-    let v = zcode_exe_path().and_then(|exe| {
-        Command::new("powershell").args(["-NoProfile", "-Command",
-            &format!("(Get-Item -LiteralPath '{}').VersionInfo.ProductVersion", exe)])
-            .creation_flags(0x08000000).output().ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .filter(|s| !s.is_empty())
-    });
+    let v = zcode_exe_path().and_then(|exe| platform::exe_product_version(&exe));
     *g = Some((now, v.clone()));
     v
 }
@@ -450,50 +395,18 @@ fn http() -> &'static reqwest::blocking::Client {
 fn zcode_exe_path() -> Option<String> {
     if let Some(p) = EXE_CACHE.lock().unwrap().clone() { return Some(p); }
     // 用户在设置里指定的路径优先（失效则回落到自动探测）
-    if let Some(p) = load_settings().get("zcode_path").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
-        if std::path::Path::new(&p).exists() {
-            *EXE_CACHE.lock().unwrap() = Some(p.clone());
-            return Some(p);
-        }
-    }
-    let found = Command::new("powershell").args(["-NoProfile", "-Command",
-        "Get-Process ZCode -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Path"])
-        .creation_flags(0x08000000)
-        .output().ok()
-        .and_then(|o| { let s = String::from_utf8_lossy(&o.stdout).trim().to_string(); if s.is_empty() { None } else { Some(s) } })
-        .or_else(|| {
-            // 客户端未运行时按常见安装位置兜底
-            let mut cands = vec![r"C:\Program Files\ZCode\ZCode.exe".to_string()];
-            if let Ok(la) = std::env::var("LOCALAPPDATA") {
-                cands.push(format!(r"{}\Programs\ZCode\ZCode.exe", la));
-            }
-            cands.into_iter().find(|c| std::path::Path::new(c).exists())
-        });
+    // 用户在设置里指定的路径优先（失效则回落到自动探测，探测在 platform.rs）
+    let user_path = load_settings().get("zcode_path").and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+        .filter(|p| std::path::Path::new(p).exists());
+    let found = platform::detect_zcode_exe(user_path.as_deref());
     if let Some(ref p) = found { *EXE_CACHE.lock().unwrap() = Some(p.clone()); }
     found
 }
 
-fn kill_zcode_process() -> bool {
-    // 先温和关闭（WM_CLOSE），不行再强制（/F），并轮询确认进程真正退出——
-    // 只看 taskkill 是否执行成功不可靠（Electron 可能忽略关闭消息）
-    let _ = Command::new("taskkill").args(["/IM", "ZCode.exe", "/T"]).creation_flags(0x08000000).output();
-    for _ in 0..8 {
-        if !zcode_running() { return true; }
-        std::thread::sleep(std::time::Duration::from_millis(300));
-    }
-    let _ = Command::new("taskkill").args(["/IM", "ZCode.exe", "/T", "/F"]).creation_flags(0x08000000).output();
-    for _ in 0..15 {
-        if !zcode_running() { return true; }
-        std::thread::sleep(std::time::Duration::from_millis(300));
-    }
-    false
-}
+fn kill_zcode_process() -> bool { platform::kill_zcode_process() }
 
-fn launch_zcode_process(exe: &str) -> bool {
-    // CREATE_NO_WINDOW：不给启动链上任何控制台，避免 ZCode 的 host 子进程弹出黑色日志窗口
-    Command::new(exe).current_dir(std::path::Path::new(exe).parent().unwrap_or(std::path::Path::new(".")))
-        .creation_flags(0x08000000).spawn().is_ok()
-}
+fn launch_zcode_process(exe: &str) -> bool { platform::launch_zcode_process(exe) }
 
 fn telemetry_device_mid() -> String {
     read_json(&v2_dir().join("telemetry-state.json")).ok()
@@ -510,32 +423,12 @@ fn jwt_expired(creds: &Value) -> bool {
     formats::jwt_expired_with(creds, &|s: &str| decrypt_value(s).ok(), chrono::Utc::now().timestamp(), 30)
 }
 
-fn startup_lnk() -> PathBuf {
-    let base = std::env::var("APPDATA").unwrap_or_default();
-    PathBuf::from(base).join(r"Microsoft\Windows\Start Menu\Programs\Startup").join("ZCode Hub.lnk")
-}
-
-fn autostart_enabled() -> bool { startup_lnk().exists() }
-
-fn set_autostart_internal(enable: bool) -> Result<(), String> {
-    let lnk = startup_lnk();
-    if !enable {
-        if lnk.exists() { std::fs::remove_file(&lnk).map_err(|e| e.to_string())?; }
-        return Ok(());
-    }
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let script = format!(
-        "$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{}');$s.TargetPath='{}';$s.WorkingDirectory='{}';$s.Save()",
-        lnk.display(), exe.display(), exe.parent().map(|p| p.display().to_string()).unwrap_or_default());
-    let out = Command::new("powershell").args(["-NoProfile", "-Command", &script])
-        .creation_flags(0x08000000).output().map_err(|e| e.to_string())?;
-    if !out.status.success() { return Err("创建自启快捷方式失败".into()); }
-    Ok(())
-}
+// 自启快捷方式与目录/浏览器打开收敛到 platform.rs
+fn autostart_enabled() -> bool { platform::autostart_enabled() }
 
 #[tauri::command]
 fn set_autostart(enable: bool) -> serde_json::Value {
-    match set_autostart_internal(enable) {
+    match platform::set_autostart_internal(enable) {
         Ok(()) => {
             audit_log("autostart", None, json!({"enabled": enable}));
             json!({"ok": true, "enabled": autostart_enabled()})
@@ -546,7 +439,7 @@ fn set_autostart(enable: bool) -> serde_json::Value {
 
 fn open_in_explorer(dir: &PathBuf) -> serde_json::Value {
     if !dir.exists() { let _ = std::fs::create_dir_all(dir); }
-    let _ = Command::new("explorer").arg(dir).creation_flags(0x08000000).spawn();
+    platform::open_dir_explorer(dir);
     json!({"ok": true})
 }
 
@@ -963,22 +856,7 @@ fn generate_poll_token() -> String {
 }
 
 // 用系统 Shell 处理协议分发（等价于 Win+R 打开 URL），不经任何命令行解析，URL 里的 & % ? 都安全
-fn open_in_browser(url: &str) {
-    use std::os::windows::ffi::OsStrExt;
-    fn wide(s: &str) -> Vec<u16> { std::ffi::OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect() }
-    #[link(name = "shell32")]
-    extern "system" {
-        fn ShellExecuteW(hwnd: isize, op: *const u16, file: *const u16, params: *const u16, dir: *const u16, show: i32) -> isize;
-    }
-    let op = wide("open");
-    let file = wide(url);
-    let r = unsafe { ShellExecuteW(0, op.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), 5 /* SW_SHOW */) };
-    if r <= 32 {
-        // ShellExecute 失败（返回 SE_ERR_* 错误码）时回退 rundll32 协议处理器
-        let _ = Command::new("rundll32").args(["url.dll,FileProtocolHandler", url])
-            .creation_flags(0x08000000).spawn();
-    }
-}
+fn open_in_browser(url: &str) { platform::open_in_browser(url) }
 
 fn _oauth_worker(provider: String, poll_token: String) {
     let client = reqwest::blocking::Client::new();
