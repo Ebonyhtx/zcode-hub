@@ -8,12 +8,14 @@
 ┌────────────────────────── ZCode Hub (Tauri 2) ──────────────────────────┐
 │  ui/  index.html + style.css + app.js      ← 零依赖前端，CSP: script 'self' │
 │        │  IPC (invoke)                                                       │
-│  src-tauri/src/main.rs                     ← 全部后端逻辑（单文件）            │
+│  src-tauri/src/main.rs                     ← 命令、状态、业务流程             │
 │   ├─ 状态: get_state / capture / switch / delete                            │
 │   ├─ OAuth: init → 浏览器登录 → poll → 业务token交换 → 档案规范化            │
 │   ├─ 额度: billing/balance（90s 缓存）   福利: billing/preview（官方同源）    │
 │   ├─ 设备身份: 每账号独立 deviceMid + arms_uid                              │
 │   └─ 守卫: safe_key 路径穿越校验 / 原子写入 / 泄密扫描                        │
+│  src-tauri/src/formats.rs                  ← 客户端文件格式纯逻辑（注入式）   │
+│   └─ credentials / setting / telemetry-state / arms store + 契约测试        │
 └──────────────────────────────────────────────────────────────────────────┘
           │ 读/写（仅切换时）                          │ 只读探测
           ▼                                            ▼
@@ -48,10 +50,19 @@
 - 不触碰 ZCode 自身凭据文件的保护方式（客户端要读）
 - 自动领取相关讨论一律引回「检测 + 通知 + 用户手动领取」
 
+### 5. 两套加密的分工（勿混淆）
+- **`enc:v1:` 字段加密**（`IV.TAG.CT`）是 **ZCode 客户端官方格式的一部分**（asar oauthCredentialRepo），
+  密钥派生公式（`SHA256("zcode-credential-fallback:win32:{home}:{user}")`）与客户端保持一致。
+  **不可改**：改了客户端就读不懂 credentials.json，切换即坏。字段名常量与解析逻辑收敛在 `formats.rs`。
+- **`ZH-SNAP1:` 整包快照加密**是 Hub 自有格式：随机 32 字节密钥经 **DPAPI** 绑定当前 Windows 用户+机器
+  （`snapkey` 文件），拷走文件无法解密。`write_snapshot` 原子写入。
+
 ## 测试策略
 
-- **Rust 单测**（`src/main.rs` mod tests）：加密往返与布局守护、路径穿越、JWT 过期、
-  preview 解析、原子写入、热切换验证回路、KDF —— 纯函数优先，不碰真实凭据
+- **Rust 单测**（`src/main.rs` mod tests + `src/formats.rs` mod tests）：加密往返与布局守护、
+  路径穿越、JWT 过期、preview 解析、原子写入、热切换验证回路、KDF —— 纯函数优先，不碰真实凭据
+- **格式契约测试**（`src-tauri/tests/fixtures/*.json` + `formats::tests`）：脱敏构造的客户端
+  文件样本钉死字段名与解析语义——客户端格式变更会先打破测试而非线上行为
 - **泄漏扫描器自检**：`scripts/secret-scan.sh --selftest` 构造已知泄漏断言能抓到
 - **CI**：Windows 测试 + 全历史泄密扫描（见 .github/workflows/）
 
