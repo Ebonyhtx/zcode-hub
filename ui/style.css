@@ -148,6 +148,8 @@ body[data-theme="dark"] .tag.bm{background:rgba(167,139,250,.12)}
 .camp-info span{color:var(--faint);font-size:10.5px}
 .camp-btn{margin-left:auto;flex:none;border:1px solid var(--accbd);color:var(--acc2);background:var(--card);border-radius:7px;padding:3px 11px;cursor:pointer;font-size:11px;font-weight:650}
 .camp-btn:hover{filter:brightness(1.05)}
+.camp-btn:disabled{opacity:.55;cursor:default;filter:none}
+.claim-prog{font-size:10.5px;color:var(--acc2);margin-left:8px;white-space:nowrap}
 
 .empty{text-align:center;padding:36px 20px;color:var(--faint)}
 .empty .big{font-size:30px;margin-bottom:10px;opacity:.55}

@@ -17,6 +17,8 @@ var I18N = {
     plan_pending: "⏳ {t} 生效", plan_active_syncing: "已生效 · 额度同步中", plan_daily: " /天",
     claim_wait: "请在浏览器中完成验证码，通过后自动领取…", claim_ok: "🎉 领取成功：{p}（{t} 生效）",
     claim_fail: "领取失败", claim_fail_msg: "领取失败：{e}",
+    claim_prog_prep: "正在准备…", claim_prog_verify: "已在浏览器打开验证页，完成后自动继续…",
+    claim_prog_claim: "正在领取…", claim_timeout: "等待验证超时（请重试）",
     week_plan: "周末福利", base_plan: "基础套餐", other_plan: "其他",
     add_title: "添加账号", add_sub: "选择账号类型，浏览器完成官方登录后自动存入账号库。",
     zai_name: "Z.AI 账号", zai_desc: "chat.z.ai · Start Plan / Coding Plan",
@@ -70,6 +72,8 @@ var I18N = {
     claim_wait: "Complete the captcha in your browser — claiming continues automatically…",
     claim_ok: "🎉 Claimed: {p} (starts {t})",
     claim_fail: "Claim failed", claim_fail_msg: "Claim failed: {e}",
+    claim_prog_prep: "Preparing…", claim_prog_verify: "Verification page opened in browser — continuing automatically…",
+    claim_prog_claim: "Claiming…", claim_timeout: "Verification timed out (please retry)",
     week_plan: "Weekend bonus", base_plan: "Base plan", other_plan: "Other",
     add_title: "Add account", add_sub: "Pick a provider, finish official login in browser, saved automatically.",
     zai_name: "Z.AI account", zai_desc: "chat.z.ai · Start Plan / Coding Plan",
@@ -453,32 +457,77 @@ function doOpenClient() { invoke("open_zcode_client"); }
 
 /* 领取：Hub 内完成事件上报 → 打开浏览器验证码页（用户手动完成）→ 自动提交 claim。
    不做自动/定时领取（边界见 AGENTS.md）。 */
+function claimButtons() {
+  return Array.prototype.slice.call(document.querySelectorAll('.camp-btn[data-action="claim"]'));
+}
+function setClaimButtons(state, activePlan) {
+  // state: null=恢复；否则显示对应阶段的文案（仅活动按钮显示阶段，其余仅禁用）
+  var labels = { preparing: t("claim_prog_prep"), waiting_captcha: t("claim_prog_verify"), claiming: t("claim_prog_claim") };
+  claimButtons().forEach(function(b) {
+    b.disabled = !!state;
+    if (!state) { b.textContent = t("claim"); return; }
+    if (activePlan && b.getAttribute("data-plan") === activePlan) b.textContent = labels[state] || t("claim");
+  });
+}
+function setClaimProgress(activePlan, text) {
+  claimButtons().forEach(function(b) {
+    if (!activePlan || b.getAttribute("data-plan") !== activePlan) return;
+    var row = b.closest(".camp");
+    if (!row) return;
+    var el = row.querySelector(".claim-prog");
+    if (!text) { if (el) el.remove(); return; }
+    if (!el) { el = document.createElement("span"); el.className = "claim-prog"; row.appendChild(el); }
+    el.textContent = text;
+  });
+}
 function doClaim(key, planId, planName) {
   if (!planId) { doOpenClient(); return; } // 老数据无 plan_id 时回退到打开客户端手动领取
+  setClaimButtons("preparing", planId);
+  setClaimProgress(planId, t("claim_prog_prep"));
   invoke("claim_plan", { key: key, planId: planId, planName: planName || "" }).then(function(r) {
-    if (!r || r.ok === false) { pushToast((r && r.error) || t("claim_fail"), "bad"); return; }
+    if (!r || r.ok === false) {
+      setClaimButtons(null, null); setClaimProgress(planId, null);
+      pushToast((r && r.error) || t("claim_fail"), "bad");
+      return;
+    }
     pushToast(t("claim_wait"), "warn");
-    pollClaimState();
-  }).catch(function(e) { pushToast(String(e), "bad"); });
+    pollClaimState(planId);
+  }).catch(function(e) {
+    setClaimButtons(null, null); setClaimProgress(planId, null);
+    pushToast(String(e), "bad");
+  });
 }
 var claimPollTimer = null;
-function pollClaimState() {
+function pollClaimState(activePlan) {
   if (claimPollTimer) clearInterval(claimPollTimer);
   var startedAt = Date.now();
   claimPollTimer = setInterval(function() {
     invoke("claim_state").then(function(s) {
-      if (!s) return;
+      if (!s || s.status === "idle") return;
       if (s.status === "success") {
         clearInterval(claimPollTimer); claimPollTimer = null;
+        setClaimButtons(null, null); setClaimProgress(activePlan, null);
         pushToast(t("claim_ok", { p: s.planName || "?", t: s.effectiveAt ? fmtT2(s.effectiveAt) : "—" }), "ok");
         refresh();
-      } else if (s.status === "failed") {
+        return;
+      }
+      if (s.status === "failed") {
         clearInterval(claimPollTimer); claimPollTimer = null;
+        setClaimButtons(null, null); setClaimProgress(activePlan, null);
         pushToast(t("claim_fail_msg", { e: s.message || "?" }), "bad");
+        return;
+      }
+      if (s.status === "waiting_captcha" || s.status === "claiming" || s.status === "preparing") {
+        setClaimButtons(s.status, activePlan);
+        setClaimProgress(activePlan, t("claim_prog_" + (s.status === "waiting_captcha" ? "verify" : s.status === "claiming" ? "claim" : "prep")));
       }
     }).catch(function() {});
-    if (Date.now() - startedAt > 170000) { clearInterval(claimPollTimer); claimPollTimer = null; }
-  }, 2000);
+    if (Date.now() - startedAt > 170000) {
+      clearInterval(claimPollTimer); claimPollTimer = null;
+      setClaimButtons(null, null); setClaimProgress(activePlan, null);
+      pushToast(t("claim_fail_msg", { e: t("claim_timeout") }), "warn");
+    }
+  }, 1500);
 }
 
 /* ---------------- oauth modal ---------------- */
