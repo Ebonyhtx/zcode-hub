@@ -14,6 +14,7 @@ var I18N = {
     no_quota: "暂无额度数据", no_quota_hint: "客户端当前无生效套餐（可能已到期或待领取）——若客户端显示「领取」，领取后额度会重新出现", quota_fail: "获取失败", used_up: "已用完", remain: " 剩余", total: "总 ", used: " · 已用 ", expires: " 到期",
     exp_soon: "⏰ {h} 小时后到期", exp_lt1h: "⏰ 不到 1 小时后到期", exptag_tip: "有额度将在 24 小时内到期",
     burn: " · ⏳ 预计还可 ~{d} 天", burn_lt1: " · ⏳ 预计不足 1 天",
+    plan_pending: "⏳ {t} 生效", plan_active_syncing: "已生效 · 额度同步中", plan_daily: " /天",
     week_plan: "周末福利", base_plan: "基础套餐", other_plan: "其他",
     add_title: "添加账号", add_sub: "选择账号类型，浏览器完成官方登录后自动存入账号库。",
     zai_name: "Z.AI 账号", zai_desc: "chat.z.ai · Start Plan / Coding Plan",
@@ -61,6 +62,7 @@ var I18N = {
     no_quota: "No quota data", no_quota_hint: "No active plan in the client (expired or awaiting claim) — quota reappears after claiming in the client", quota_fail: "Fetch failed", used_up: "Used up", remain: " left", total: "Total ", used: " · used ", expires: " expires",
     exp_soon: "⏰ expires in {h}h", exp_lt1h: "⏰ expires in <1h", exptag_tip: "Some quota expires within 24h",
     burn: " · ⏳ ~{d}d left at this pace", burn_lt1: " · ⏳ under a day left",
+    plan_pending: "⏳ starts {t}", plan_active_syncing: "active · syncing quota", plan_daily: "/day",
     week_plan: "Weekend bonus", base_plan: "Base plan", other_plan: "Other",
     add_title: "Add account", add_sub: "Pick a provider, finish official login in browser, saved automatically.",
     zai_name: "Z.AI account", zai_desc: "chat.z.ai · Start Plan / Coding Plan",
@@ -210,8 +212,37 @@ function soonestExpireH(balances) {
   });
   return m;
 }
+/* 已领取但待生效的计划：balance 的 plans[] 里 status=active、entitlement.effective_at 在未来，
+   此时 balances 为空。展示计划与生效/到期时间，避免误以为「没有额度」。 */
+function planEffectiveTs(p) {
+  var effs = (Array.isArray(p.entitlements) ? p.entitlements : [])
+    .map(function (e) { return Number(e.effective_at || 0); }).filter(function (x) { return x > 0; });
+  return effs.length ? Math.min.apply(null, effs) : Number(p.starts_at || 0);
+}
+function renderPendingPlans(plans) {
+  var rows = (Array.isArray(plans) ? plans : []).filter(function (p) { return p && (p.status === "active" || !p.status); });
+  if (!rows.length) return null;
+  return rows.map(function (p) {
+    var eff = planEffectiveTs(p);
+    var pending = eff > 0 && eff * 1000 > Date.now();
+    var badge = pending ? t("plan_pending", { t: eff ? fmtT2(eff) : "?" }) : t("plan_active_syncing");
+    var ents = (Array.isArray(p.entitlements) ? p.entitlements : []).map(function (e) {
+      var nm = e.show_name || e.entitlement_id || "?";
+      var amt = Number(e.grant_units || 0);
+      var daily = e.period === "daily" ? t("plan_daily") : "";
+      return '<span class="brow-model">' + esc(nm) + '</span> <span class="num">' + fmtQ(amt) + '</span>' + esc(daily) + (e.unit_type === "token" ? " Token" : "");
+    }).join(" · ");
+    return '<div class="pgroup"><div class="plabel">' + esc(p.name || p.plan_id || "Start Plan") + '</div>' +
+      '<div class="brow"><div class="brow-top" style="align-items:center">' + ents +
+      '<span class="expsoon" style="margin-left:auto">' + esc(badge) + '</span></div></div></div>';
+  }).join("");
+}
 function renderBuckets(balances, plans, burnMap) {
-  if (!Array.isArray(balances) || !balances.length) return '<div style="font-size:12px;padding:4px 0;color:var(--faint)">' + esc(t("no_quota")) + '<div style="font-size:10.5px;margin-top:2px">' + esc(t("no_quota_hint")) + '</div></div>';
+  if (!Array.isArray(balances) || !balances.length) {
+    var pending = renderPendingPlans(plans);
+    if (pending) return pending;
+    return '<div style="font-size:12px;padding:4px 0;color:var(--faint)">' + esc(t("no_quota")) + '<div style="font-size:10.5px;margin-top:2px">' + esc(t("no_quota_hint")) + '</div></div>';
+  }
   var groups = {}, order = [];
   balances.forEach(function(b) {
     var key = planTag(plans, b.plan_id) || t("other_plan");
