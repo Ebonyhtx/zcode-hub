@@ -3,6 +3,11 @@
 本文件记录 ZCode Hub 的显著变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.6.2] - 2026-11-02
+
+### 修复
+- 已领取但待生效的计划不再显示为「暂无额度数据」：当余额为空但存在 active 计划（如 ZCODE GLOBAL BUILD 3 亿 Token 待 23:00 生效）时，卡片展示计划名、额度与「⏳ HH:MM 生效」徽标
+
 ## [1.6.1] - 2026-11-02
 
 ### 修复
