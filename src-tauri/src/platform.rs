@@ -237,6 +237,69 @@ pub fn set_autostart_internal(enable: bool) -> Result<(), String> {
     }
 }
 
+// ---------------- 系统信息（活动事件上报 / 验证码页用） ----------------
+
+/// IANA 时区名（事件上报字段）；未知返回 "unknown"
+pub fn client_timezone() -> String {
+    #[cfg(windows)]
+    {
+        static CACHE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        CACHE.get_or_init(|| {
+            let out = no_window(Command::new("tzutil").args(["/g"])).output().ok();
+            let name = out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+            match name.as_str() {
+                "China Standard Time" | "China Daylight Time" => "Asia/Shanghai",
+                "Singapore Standard Time" => "Asia/Singapore",
+                "Tokyo Standard Time" => "Asia/Tokyo",
+                "UTC" => "UTC",
+                _ => "unknown",
+            }.to_string()
+        }).clone()
+    }
+    #[cfg(not(windows))]
+    {
+        "unknown".to_string()
+    }
+}
+
+/// 系统版本（"10.0.<build>"），读注册表 CurrentBuildNumber
+pub fn os_version() -> Option<String> {
+    #[cfg(windows)]
+    {
+        static CACHE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+        CACHE.get_or_init(|| {
+            let out = no_window(Command::new("reg").args([
+                "query", r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion", "/v", "CurrentBuildNumber",
+            ])).output().ok()?;
+            let txt = String::from_utf8_lossy(&out.stdout);
+            let build = txt.lines().find(|l| l.contains("CurrentBuildNumber"))?
+                .split_whitespace().last()?.to_string();
+            Some(format!("10.0.{}", build))
+        }).clone()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// 主屏分辨率 "WxH"；失败返回 None（调用方有兜底常量）
+pub fn screen_resolution() -> Option<String> {
+    #[cfg(windows)]
+    {
+        extern "system" {
+            fn GetSystemMetrics(index: i32) -> i32;
+        }
+        let w = unsafe { GetSystemMetrics(0) }; // SM_CXSCREEN
+        let h = unsafe { GetSystemMetrics(1) }; // SM_CYSCREEN
+        if w > 0 && h > 0 { Some(format!("{}x{}", w, h)) } else { None }
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 // ---------------- ZCode 的 Windows 数据目录布局 ----------------
 
 /// %APPDATA% 下 ZCode 系客户端的 rum-electron-store 目录（含 Preview/Dev 变体与通配扫描）。

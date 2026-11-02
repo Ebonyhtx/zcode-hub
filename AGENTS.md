@@ -20,7 +20,7 @@ Tauri 2 桌面工具：ZCode 多账号切换 + 额度展示 + 官方 preview 福
 3. **版本号两处同步**：`tauri.conf.json` 与 `src-tauri/Cargo.toml`，改完跑 `bash scripts/repo-check.sh`
 4. **UI 文案双语**：改 `ui/app.js` 里 `I18N` 的 zh/en 两份
 5. **CSP**：前端禁止内联事件与内联脚本；交互一律 `data-action` 委托（`ui/app.js` 里的 delegation）
-6. **边界**：不做自动领取福利、不做验证码处理、不做遥测事件仿真——PR 引入这些会被拒
+6. **边界**（2026-11-02 调整）：允许①以用户本人账号上报 `app_launch`/`app_daily_active` 活动事件（与客户端启动行为一致，用于检测解锁）；②人工完成阿里云验证码后一键领取。**仍禁止**：自动/定时领取、验证码绕过自动化、批量刷取、遥测造假——见 `docs/DESIGN.md` §4
 
 ## 常用命令
 

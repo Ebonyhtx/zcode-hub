@@ -15,6 +15,7 @@ mod formats;
 mod audit;
 mod history;
 mod platform;
+mod claim;
 use formats::{read_json, write_json, CRED_FILE, ENC_PREFIX};
 
 // 审计日志：只记 profile key 与事件结果，best-effort（失败静默，不影响业务）
@@ -421,32 +422,6 @@ struct ProfileInfo { key: String, label: String, captured_at: String, is_current
 // 令牌过期判定（30s 时钟容忍）；收敛在 formats.rs，兼容明文与 enc:v1 两种存法
 fn jwt_expired(creds: &Value) -> bool {
     formats::jwt_expired_with(creds, &|s: &str| decrypt_value(s).ok(), chrono::Utc::now().timestamp(), 30)
-}
-
-#[cfg(test)]
-mod preview_protocol_tests {
-    use super::*;
-
-    #[test]
-    fn preview_missing_data_is_error_not_empty_benefits() {
-        // 服务端返回 code 0 但没有 data 字段：必须判为检测失败（客户端同样按错误处理）
-        let j = json!({"code": 0, "msg": "", "logid": "x"});
-        assert!(preview_protocol_error(&j).is_some());
-        // data 存在且 plans 为空：正常，表示确实没有可领项
-        let j = json!({"code": 0, "msg": "", "data": {"plans": []}});
-        assert!(preview_protocol_error(&j).is_none());
-        assert!(parse_preview_plans(&j).is_empty());
-        // 业务错误码带 msg
-        let j = json!({"code": 40001, "msg": "token invalid"});
-        assert_eq!(preview_protocol_error(&j).as_deref(), Some("token invalid"));
-        // data 非对象（null / 数组）同样是协议异常
-        assert!(preview_protocol_error(&json!({"code": 0, "data": null})).is_some());
-        assert!(preview_protocol_error(&json!({"code": 0, "data": []})).is_some());
-        // 正常有可领项：无错误且能解析
-        let j = json!({"code": 0, "data": {"plans": [{"plan_id": "p1", "name": "体验套餐", "entitlements": [{"show_name": "GLM-5.3-Flash", "grant_units": 300000000, "unit_type": "token"}]}]}});
-        assert!(preview_protocol_error(&j).is_none());
-        assert_eq!(parse_preview_plans(&j).len(), 1);
-    }
 }
 
 // 自启快捷方式与目录/浏览器打开收敛到 platform.rs
@@ -1155,33 +1130,38 @@ fn load_settings() -> Value {
 }
 
 // 官方 preview 响应 → 福利条目（纯函数，可单测）
-fn parse_preview_plans(j: &Value) -> Vec<Value> {
+fn campaigns_from_plans(plans: &[Value]) -> Vec<Value> {
     let mut camps = Vec::new();
-    if let Some(plans) = j.pointer("/data/plans").and_then(|v| v.as_array()) {
-        for p in plans {
-            let name = p.get("name").and_then(|v| v.as_str()).map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .or_else(|| p.get("plan_id").and_then(|v| v.as_str()).map(String::from))
-                .unwrap_or_else(|| "未命名福利".into());
-            let mut grant: i64 = 0;
-            let mut parts: Vec<String> = Vec::new();
-            if let Some(ents) = p.get("entitlements").and_then(|v| v.as_array()) {
-                for e in ents {
-                    let units = e.get("grant_units").and_then(|v| v.as_i64()).unwrap_or(0);
-                    grant += units;
-                    if let Some(sn) = e.get("show_name").and_then(|v| v.as_str()) {
-                        if !sn.is_empty() { parts.push(format!("{} +{}", sn, units)); }
-                    }
+    for p in plans {
+        let name = p.get("name").and_then(|v| v.as_str()).map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(|| p.get("plan_id").and_then(|v| v.as_str()).map(String::from))
+            .unwrap_or_else(|| "未命名福利".into());
+        let mut grant: i64 = 0;
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(ents) = p.get("entitlements").and_then(|v| v.as_array()) {
+            for e in ents {
+                let units = e.get("grant_units").and_then(|v| v.as_i64()).unwrap_or(0);
+                grant += units;
+                if let Some(sn) = e.get("show_name").and_then(|v| v.as_str()) {
+                    if !sn.is_empty() { parts.push(format!("{} +{}", sn, units)); }
                 }
             }
-            camps.push(json!({
-                "title": name,
-                "grant": if grant > 0 { grant.to_string() } else { "?".to_string() },
-                "detail": parts.join(" / ")
-            }));
         }
+        camps.push(json!({
+            "title": name,
+            "grant": if grant > 0 { grant.to_string() } else { "?".to_string() },
+            "detail": parts.join(" / "),
+            "plan_id": p.get("plan_id").and_then(|v| v.as_str()).unwrap_or(""),
+        }));
     }
     camps
+}
+
+#[cfg(test)]
+fn parse_preview_plans(j: &Value) -> Vec<Value> {
+    let plans = j.pointer("/data/plans").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    campaigns_from_plans(&plans)
 }
 
 // 官方「可领取预览」：GET /api/v1/zcode-plan/billing/preview —— 客户端领取弹窗同源接口，
@@ -1196,44 +1176,122 @@ fn zcode_api_headers(rb: reqwest::blocking::RequestBuilder) -> reqwest::blocking
         .header("X-Os-Category", "windows")
         .header("X-Client-Language", "zh-CN")
         .header("HTTP-Referer", "https://zcode.z.ai")
+        .header("x-request-id", uuid::Uuid::new_v4().to_string())
 }
 
-// preview 响应分类（纯函数）：code!=0 → 业务错误；缺 data 字段 → 协议/身份异常。
-// 注意：客户端对"缺 data"按错误处理（manual_claim_preview_missing_data），
-// 因此这里绝不能再把它当成「无待领福利」，否则会给出误导性的 ✓。
-fn preview_protocol_error(j: &Value) -> Option<String> {
-    if j.get("code").and_then(|c| c.as_i64()) != Some(0) {
-        let msg = j.get("msg").and_then(|m| m.as_str()).map(|s| s.trim()).filter(|s| !s.is_empty()).unwrap_or("preview error");
-        return Some(msg.to_string());
+// 客户端完整版本号（事件上报/接口要求 "x.y.z" 形态；失败回退兼容锚点）
+fn client_app_version() -> String {
+    zcode_client_version().map(|v| {
+        let parts: Vec<&str> = v.split('.').collect();
+        if parts.len() >= 3 { format!("{}.{}.{}", parts[0], parts[1], parts[2]) } else { v }
+    }).unwrap_or_else(|| SUPPORTED_CLIENT_VERSION.to_string())
+}
+
+// 读取某账号的凭据快照（用于事件上报的 user_id）
+fn cred_for_key(key: &str) -> Option<Value> {
+    if key == "__current__" { read_json(&cred_path()).ok() }
+    else { read_snapshot_value(&profiles_dir().join(key)) }
+}
+
+// 活动事件上报节流表：每账号 30 分钟最多一次（检测解锁用，见 claim.rs 模块文档）
+static EVENT_REPORTS: Mutex<Option<std::collections::HashMap<String, i64>>> = Mutex::new(None);
+
+fn maybe_report_events(key: &str, creds: &Value, mid: &str, ver: &str) {
+    let now = chrono::Utc::now().timestamp();
+    {
+        let mut g = EVENT_REPORTS.lock().unwrap();
+        let map = g.get_or_insert_with(Default::default);
+        if let Some(t) = map.get(key) { if now - t < 1800 { return; } }
+        map.insert(key.to_string(), now);
     }
-    match j.get("data") {
-        Some(d) if d.is_object() => None,
-        _ => Some("接口未返回体验套餐数据（客户端版本或账号状态可能已变化）".to_string()),
-    }
+    let Some(uid) = claim::telemetry_user_id(creds, &|s| decrypt_value(s).ok()) else { return };
+    let env = claim::EventEnv::detect(ver);
+    let _ = claim::report_activation_events(http(), &env, &uid, mid);
 }
 
 fn _benefits_key_result(key: &str) -> Value {
     let ts = chrono::Utc::now().timestamp();
     let token = match _get_jwt_token(key) { Ok(t) => t, Err(e) => return json!({"ok": false, "error": e, "count": 0, "campaigns": [], "checked_at": ts}) };
-    let client = reqwest::blocking::Client::new();
-    let resp = zcode_api_headers(client.get("https://zcode.z.ai/api/v1/zcode-plan/billing/preview")
-        .query(&[("app_version", "3.17.1"), ("platform", "win32-x64")])
-        .header("Authorization", format!("Bearer {}", token)))
-        .timeout(std::time::Duration::from_secs(30)).send();
-    let j: Value = match resp {
-        Ok(r) => {
-            if r.status().as_u16() == 429 {
-                return json!({"ok": false, "error": "请求过于频繁(429)，稍后自动重试", "count": 0, "campaigns": [], "checked_at": ts});
-            }
-            match r.json::<Value>() { Ok(j) => j, Err(e) => return json!({"ok": false, "error": e.to_string(), "count": 0, "campaigns": [], "checked_at": ts}) }
+    let mid = telemetry_device_mid();
+    let ver = client_app_version();
+    // 检测解锁：以用户本人账号上报 app_launch / app_daily_active（与客户端启动行为一致，30 分钟节流）
+    if let Some(creds) = cred_for_key(key) { maybe_report_events(key, &creds, &mid, &ver); }
+    match claim::preview_plans(http(), &token, &mid, &ver) {
+        Ok(plans) => {
+            let camps = campaigns_from_plans(&plans);
+            json!({"ok": true, "count": camps.len(), "campaigns": camps, "checked_at": ts})
         }
-        Err(e) => return json!({"ok": false, "error": e.to_string(), "count": 0, "campaigns": [], "checked_at": ts}),
-    };
-    if let Some(err) = preview_protocol_error(&j) {
-        return json!({"ok": false, "error": err, "count": 0, "campaigns": [], "checked_at": ts});
+        Err(e) => json!({"ok": false, "error": e, "count": 0, "campaigns": [], "checked_at": ts}),
     }
-    let camps = parse_preview_plans(&j);
-    json!({"ok": true, "count": camps.len(), "campaigns": camps, "checked_at": ts})
+}
+
+// ---------------- 领取（验证码由用户在系统浏览器手动完成；不做自动领取） ----------------
+
+static CLAIM_STATE: Mutex<Option<Value>> = Mutex::new(None);
+
+fn set_claim_state(v: Value) { *CLAIM_STATE.lock().unwrap() = Some(v); }
+
+#[tauri::command]
+fn claim_state() -> Value { CLAIM_STATE.lock().unwrap().clone().unwrap_or(json!({"status":"idle"})) }
+
+#[tauri::command]
+fn claim_plan(key: String, plan_id: String, plan_name: Option<String>) -> Value {
+    if let Err(e) = safe_key(&key) { return denied(e); }
+    let pname = plan_name.unwrap_or_default();
+    set_claim_state(json!({"status": "preparing", "planId": plan_id, "planName": pname}));
+    let (k, pid, pn) = (key.clone(), plan_id.clone(), pname.clone());
+    std::thread::spawn(move || claim_worker(k, pid, pn));
+    json!({"ok": true, "started": true})
+}
+
+fn claim_worker(key: String, plan_id: String, plan_name: String) {
+    let fail = |msg: String| set_claim_state(json!({"status":"failed","message":msg,"planName":plan_name.clone()}));
+    let ver = client_app_version();
+    let token = match _get_jwt_token(&key) { Ok(t) => t, Err(e) => return fail(e) };
+    let mid = telemetry_device_mid();
+    // 领取前再确保激活（best-effort）
+    if let Some(creds) = cred_for_key(&key) {
+        if let Some(uid) = claim::telemetry_user_id(&creds, &|s| decrypt_value(s).ok()) {
+            let env = claim::EventEnv::detect(&ver);
+            let _ = claim::report_activation_events(http(), &env, &uid, &mid);
+        }
+    }
+    // 验证码（若服务端要求）：本地回环页 + 系统浏览器，用户手动完成
+    let cfg = claim::fetch_captcha_config(http(), &ver).unwrap_or(json!({"enabled": false}));
+    let enabled = cfg.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+    let mut param: Option<String> = None;
+    let mut region: Option<String> = None;
+    if enabled {
+        set_claim_state(json!({"status":"waiting_captcha","planName": plan_name}));
+        match claim::start_captcha_flow(&cfg) {
+            Ok(flow) => {
+                platform::open_in_browser(&flow.url);
+                match claim::wait_captcha(flow) {
+                    Ok(v) => {
+                        param = v.get("param").and_then(|p| p.as_str()).map(String::from);
+                        region = v.get("region").and_then(|r| r.as_str()).map(String::from);
+                        if param.as_deref().map(|p| p.trim().is_empty()).unwrap_or(true) {
+                            return fail("未取得验证码结果".into());
+                        }
+                    }
+                    Err(e) => return fail(e),
+                }
+            }
+            Err(e) => return fail(e),
+        }
+    }
+    set_claim_state(json!({"status":"claiming","planName": plan_name}));
+    match claim::submit_claim(http(), &token, &mid, &ver, &plan_id, param.as_deref(), region.as_deref()) {
+        Ok(data) => {
+            let (eff, _s, ends) = claim::claim_timing(&data);
+            let name = data.pointer("/plan/name").and_then(|v| v.as_str())
+                .or_else(|| data.pointer("/plan/plan_id").and_then(|v| v.as_str()))
+                .map(String::from).filter(|s| !s.is_empty()).unwrap_or_else(|| plan_name.clone());
+            audit_log("claim", Some(&key), json!({"plan": plan_id, "effective_at": eff}));
+            set_claim_state(json!({"status":"success","planName": name, "effectiveAt": eff, "endsAt": ends}));
+        }
+        Err(e) => fail(e),
+    }
 }
 
 fn benefits_file() -> PathBuf { app_data_dir().join("benefits.json") }
@@ -1440,7 +1498,7 @@ pub fn run() {
             get_state, capture_profile, switch_profile, delete_profile,
             fetch_quota, quota_history, open_zcode_client,
             oauth_start, oauth_status, oauth_open,
-            check_benefits, check_all_benefits, get_settings, set_settings,
+            check_benefits, check_all_benefits, claim_plan, claim_state, get_settings, set_settings,
             win_minimize, win_toggle_maximize, win_hide, win_start_drag,
             export_bundle, import_bundle,
             set_autostart, open_data_dir, open_zcode_data_dir, check_update, open_url, install_update,

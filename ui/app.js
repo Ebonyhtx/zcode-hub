@@ -15,6 +15,8 @@ var I18N = {
     exp_soon: "⏰ {h} 小时后到期", exp_lt1h: "⏰ 不到 1 小时后到期", exptag_tip: "有额度将在 24 小时内到期",
     burn: " · ⏳ 预计还可 ~{d} 天", burn_lt1: " · ⏳ 预计不足 1 天",
     plan_pending: "⏳ {t} 生效", plan_active_syncing: "已生效 · 额度同步中", plan_daily: " /天",
+    claim_wait: "请在浏览器中完成验证码，通过后自动领取…", claim_ok: "🎉 领取成功：{p}（{t} 生效）",
+    claim_fail: "领取失败", claim_fail_msg: "领取失败：{e}",
     week_plan: "周末福利", base_plan: "基础套餐", other_plan: "其他",
     add_title: "添加账号", add_sub: "选择账号类型，浏览器完成官方登录后自动存入账号库。",
     zai_name: "Z.AI 账号", zai_desc: "chat.z.ai · Start Plan / Coding Plan",
@@ -63,6 +65,9 @@ var I18N = {
     exp_soon: "⏰ expires in {h}h", exp_lt1h: "⏰ expires in <1h", exptag_tip: "Some quota expires within 24h",
     burn: " · ⏳ ~{d}d left at this pace", burn_lt1: " · ⏳ under a day left",
     plan_pending: "⏳ starts {t}", plan_active_syncing: "active · syncing quota", plan_daily: "/day",
+    claim_wait: "Complete the captcha in your browser — claiming continues automatically…",
+    claim_ok: "🎉 Claimed: {p} (starts {t})",
+    claim_fail: "Claim failed", claim_fail_msg: "Claim failed: {e}",
     week_plan: "Weekend bonus", base_plan: "Base plan", other_plan: "Other",
     add_title: "Add account", add_sub: "Pick a provider, finish official login in browser, saved automatically.",
     zai_name: "Z.AI account", zai_desc: "chat.z.ai · Start Plan / Coding Plan",
@@ -281,14 +286,14 @@ function renderBuckets(balances, plans, burnMap) {
   }).join("");
 }
 var prevCounts = {};
-function renderBenefitState(b) {
+function renderBenefitState(b, key) {
   if (!b) return '<div class="bstate unk">' + esc(t("not_checked")) + '</div>';
   var when = b.checked_at ? ' <span class="whn num">· '+fmtT2(b.checked_at)+'</span>' : "";
   if (b.ok === false) return '<div class="bstate bad">'+esc(t("ben_fail", {e: b.error || "?"}))+'</div>';
   if (!b.count) return '<div class="bstate none">'+esc(t("ben_none"))+when+'</div>';
   var rows = '<div class="campaigns">' + (b.campaigns || []).map(function(c) {
     var detail = c.detail ? ' <span>(' + esc(c.detail) + ')</span>' : "";
-    return '<div class="camp"><div class="camp-info"><b>'+esc(c.title)+'</b><span>'+esc(c.grant)+' Token'+detail+'</span></div><button class="camp-btn" data-action="claim">'+esc(t("claim"))+'</button></div>';
+    return '<div class="camp"><div class="camp-info"><b>'+esc(c.title)+'</b><span>'+esc(c.grant)+' Token'+detail+'</span></div><button class="camp-btn" data-action="claim" data-key="'+esc(key||"")+'" data-plan="'+esc(c.plan_id||"")+'" data-plan-name="'+esc(c.title)+'">'+esc(t("claim"))+'</button></div>';
   }).join("") + '</div>';
   return '<div class="bstate has">'+esc(t("ben_has", {n: b.count}))+when+'</div>' + rows;
 }
@@ -326,7 +331,7 @@ function cardHtml(p, quotaData, benefitData, historyData) {
   }
   var buckets = quotaData && quotaData.ok ? renderBuckets(balances, plans, burnMap)
     : '<div style="font-size:11.5px;color:var(--bad);padding:2px 0">'+esc(quotaData && quotaData.error || t("quota_fail"))+'</div>';
-  var benefit = renderBenefitState(benefitData);
+  var benefit = renderBenefitState(benefitData, p.key);
   var foot = p.is_current
     ? '<span class="curmark">'+esc(t("use_now"))+'</span>'
     : '<button class="switch-btn" data-action="switch" data-key="'+esc(p.key)+'">'+esc(t("switch_to"))+'</button>';
@@ -436,6 +441,36 @@ function doSwitch(key) {
 function doDelete(key) { if (!confirm(t("c_del"))) return; invoke("delete_profile", { key: key }).then(function() { pushToast(t("t_deleted"), "ok"); refresh(); }); }
 function doKill() { if (!confirm(t("c_kill"))) return; invoke("kill_zcode_client").then(function() { refresh(); }); }
 function doOpenClient() { invoke("open_zcode_client"); }
+
+/* 领取：Hub 内完成事件上报 → 打开浏览器验证码页（用户手动完成）→ 自动提交 claim。
+   不做自动/定时领取（边界见 AGENTS.md）。 */
+function doClaim(key, planId, planName) {
+  if (!planId) { doOpenClient(); return; } // 老数据无 plan_id 时回退到打开客户端手动领取
+  invoke("claim_plan", { key: key, planId: planId, planName: planName || "" }).then(function(r) {
+    if (!r || r.ok === false) { pushToast((r && r.error) || t("claim_fail"), "bad"); return; }
+    pushToast(t("claim_wait"), "warn");
+    pollClaimState();
+  }).catch(function(e) { pushToast(String(e), "bad"); });
+}
+var claimPollTimer = null;
+function pollClaimState() {
+  if (claimPollTimer) clearInterval(claimPollTimer);
+  var startedAt = Date.now();
+  claimPollTimer = setInterval(function() {
+    invoke("claim_state").then(function(s) {
+      if (!s) return;
+      if (s.status === "success") {
+        clearInterval(claimPollTimer); claimPollTimer = null;
+        pushToast(t("claim_ok", { p: s.planName || "?", t: s.effectiveAt ? fmtT2(s.effectiveAt) : "—" }), "ok");
+        refresh();
+      } else if (s.status === "failed") {
+        clearInterval(claimPollTimer); claimPollTimer = null;
+        pushToast(t("claim_fail_msg", { e: s.message || "?" }), "bad");
+      }
+    }).catch(function() {});
+    if (Date.now() - startedAt > 170000) { clearInterval(claimPollTimer); claimPollTimer = null; }
+  }, 2000);
+}
 
 /* ---------------- oauth modal ---------------- */
 var oauthTimer = null;
@@ -596,7 +631,7 @@ document.addEventListener("click", function(e) {
     case "switch": doSwitch(key); break;
     case "del": doDelete(key); break;
     case "checkone": checkOne(key, el); break;
-    case "claim": doOpenClient(); break;
+    case "claim": doClaim(el.getAttribute("data-key"), el.getAttribute("data-plan"), el.getAttribute("data-plan-name")); break;
   }
 });
 document.addEventListener("change", function(e) {
