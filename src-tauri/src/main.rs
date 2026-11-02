@@ -499,6 +499,25 @@ async fn install_update(app: tauri::AppHandle) -> Result<serde_json::Value, Stri
     }
 }
 
+// 托盘提示：当前账号 + 待领福利数（自动检测后也会刷新，窗口关闭时同样可见）
+fn update_tray_tooltip() {
+    let Some(h) = APP_HANDLE.lock().unwrap().clone() else { return };
+    let Some(tray) = h.tray_by_id("main") else { return };
+    let label = if cred_path().exists() {
+        read_json(&cred_path()).map(|c| account_label(&c)).unwrap_or("?".into())
+    } else { "(未登录)".into() };
+    let n: u64 = BENEFITS.lock().unwrap().as_ref()
+        .map(|m| m.values().filter(|v| v.get("ok").and_then(|b| b.as_bool()) != Some(false))
+            .filter_map(|v| v.get("count").and_then(|c| c.as_u64())).sum())
+        .unwrap_or(0);
+    let tip = if n > 0 {
+        format!("ZCode Hub — 当前: {} · 🎁 {} 项待领", label, n)
+    } else {
+        format!("ZCode Hub — 当前: {}", label)
+    };
+    let _ = tray.set_tooltip(Some(tip));
+}
+
 #[tauri::command]
 fn get_state() -> serde_json::Value {
     load_benefits_once();
@@ -536,11 +555,7 @@ fn get_state() -> serde_json::Value {
         }
     }
     let benefits = BENEFITS.lock().unwrap().clone().unwrap_or_default();
-    if let Some(h) = APP_HANDLE.lock().unwrap().as_ref() {
-        if let Some(tray) = h.tray_by_id("main") {
-            let _ = tray.set_tooltip(Some(format!("ZCode Hub — 当前: {}", cur_label)));
-        }
-    }
+    update_tray_tooltip();
     json!({ "current_label": cur_label, "current_provider": cur_provider, "profiles": profiles, "zcode_running": zcode_running(), "zcode_exe": zcode_exe_path().unwrap_or_default(),
             "settings": load_settings(), "benefits": benefits, "last_check": *LAST_CHECK.lock().unwrap(),
             "version": env!("CARGO_PKG_VERSION"), "autostart": autostart_enabled(), "compat": compat_report() })
@@ -1193,6 +1208,18 @@ fn cred_for_key(key: &str) -> Option<Value> {
     else { read_snapshot_value(&profiles_dir().join(key)) }
 }
 
+// 每账号虚拟设备标识（meta.json 的 device_mid）。非当前账号的 API 请求必须用它：
+// 服务端按 账号×设备 校验，用错 deviceMid 会导致 preview 列表为空 / claim 被风控拒绝(3012)。
+fn profile_device_mid(key: &str) -> Option<String> {
+    if key == "__current__" { return Some(telemetry_device_mid()); }
+    read_json(&profiles_dir().join(key).join("meta.json")).ok()?
+        .get("device_mid").and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+fn api_device_mid(key: &str) -> String {
+    profile_device_mid(key).unwrap_or_else(telemetry_device_mid)
+}
+
 // 活动事件上报节流表：每账号 30 分钟最多一次（检测解锁用，见 claim.rs 模块文档）
 static EVENT_REPORTS: Mutex<Option<std::collections::HashMap<String, i64>>> = Mutex::new(None);
 
@@ -1212,7 +1239,7 @@ fn maybe_report_events(key: &str, creds: &Value, mid: &str, ver: &str) {
 fn _benefits_key_result(key: &str) -> Value {
     let ts = chrono::Utc::now().timestamp();
     let token = match _get_jwt_token(key) { Ok(t) => t, Err(e) => return json!({"ok": false, "error": e, "count": 0, "campaigns": [], "checked_at": ts}) };
-    let mid = telemetry_device_mid();
+    let mid = api_device_mid(key); // 账号自己的设备标识（见 profile_device_mid 注释）
     let ver = client_app_version();
     // 检测解锁：以用户本人账号上报 app_launch / app_daily_active（与客户端启动行为一致，30 分钟节流）
     if let Some(creds) = cred_for_key(key) { maybe_report_events(key, &creds, &mid, &ver); }
@@ -1234,9 +1261,16 @@ fn set_claim_state(v: Value) { *CLAIM_STATE.lock().unwrap() = Some(v); }
 #[tauri::command]
 fn claim_state() -> Value { CLAIM_STATE.lock().unwrap().clone().unwrap_or(json!({"status":"idle"})) }
 
+fn claim_busy() -> bool {
+    let st = CLAIM_STATE.lock().unwrap().clone().unwrap_or(Value::Null);
+    matches!(st.get("status").and_then(|s| s.as_str()),
+        Some("preparing") | Some("activating") | Some("waiting_captcha") | Some("claiming"))
+}
+
 #[tauri::command]
 fn claim_plan(key: String, plan_id: String, plan_name: Option<String>) -> Value {
     if let Err(e) = safe_key(&key) { return denied(e); }
+    if claim_busy() { return json!({"ok": false, "error": "上一次领取仍在进行中，请稍候"}); }
     let pname = plan_name.unwrap_or_default();
     set_claim_state(json!({"status": "preparing", "planId": plan_id, "planName": pname}));
     let (k, pid, pn) = (key.clone(), plan_id.clone(), pname.clone());
@@ -1248,7 +1282,7 @@ fn claim_worker(key: String, plan_id: String, plan_name: String) {
     let fail = |msg: String| set_claim_state(json!({"status":"failed","message":msg,"planName":plan_name.clone()}));
     let ver = client_app_version();
     let token = match _get_jwt_token(&key) { Ok(t) => t, Err(e) => return fail(e) };
-    let mid = telemetry_device_mid();
+    let mid = api_device_mid(&key); // 账号自己的设备标识，避免 3012 风控
     // 领取前再确保激活（best-effort）
     if let Some(creds) = cred_for_key(&key) {
         if let Some(uid) = claim::telemetry_user_id(&creds, &|s| decrypt_value(s).ok()) {
@@ -1321,6 +1355,7 @@ fn run_benefit_check_for(key: &str) -> Value {
         .get_or_insert_with(std::collections::HashMap::new)
         .insert(key.to_string(), result.clone());
     persist_benefits();
+    update_tray_tooltip();
     result
 }
 
