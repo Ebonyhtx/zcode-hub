@@ -41,7 +41,9 @@ pub fn account_label_with(creds: &Value, decrypt: &DecryptFn) -> String {
         order.push(oauth_field(&p, "user_info"));
     }
     for k in FIELD_USER_INFO_KEYS {
-        if !order.iter().any(|x| x == k) { order.push(k.to_string()); }
+        if !order.iter().any(|x| x == k) {
+            order.push(k.to_string());
+        }
     }
     for uk in &order {
         if let Some(raw) = creds.get(uk).and_then(|v| v.as_str()) {
@@ -49,7 +51,9 @@ pub fn account_label_with(creds: &Value, decrypt: &DecryptFn) -> String {
                 if let Ok(info) = serde_json::from_str::<Value>(&plain) {
                     for k in ["username", "displayName", "name", "nickname", "email"] {
                         if let Some(v) = info.get(k).and_then(|v| v.as_str()) {
-                            if !v.is_empty() { return v.to_string(); }
+                            if !v.is_empty() {
+                                return v.to_string();
+                            }
                         }
                     }
                 }
@@ -61,10 +65,15 @@ pub fn account_label_with(creds: &Value, decrypt: &DecryptFn) -> String {
             let parts: Vec<&str> = plain.split('.').collect();
             if parts.len() >= 2 {
                 let padded = format!("{}{}", parts[1], "=".repeat((4 - parts[1].len() % 4) % 4));
-                if let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&padded) {
-                    if let Ok(claims) = serde_json::from_str::<Value>(&String::from_utf8_lossy(&bytes)) {
+                if let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&padded)
+                {
+                    if let Ok(claims) =
+                        serde_json::from_str::<Value>(&String::from_utf8_lossy(&bytes))
+                    {
                         for k in ["name", "email", "sub"] {
-                            if let Some(v) = claims.get(k).and_then(|v| v.as_str()) { return v.to_string(); }
+                            if let Some(v) = claims.get(k).and_then(|v| v.as_str()) {
+                                return v.to_string();
+                            }
                         }
                     }
                 }
@@ -80,7 +89,9 @@ pub fn account_label_with(creds: &Value, decrypt: &DecryptFn) -> String {
 
 /// 当前激活 provider（解不开 / 非字符串返回 None）
 pub fn active_provider_with(creds: &Value, decrypt: &DecryptFn) -> Option<String> {
-    creds.get(FIELD_ACTIVE_PROVIDER).and_then(|v| v.as_str())
+    creds
+        .get(FIELD_ACTIVE_PROVIDER)
+        .and_then(|v| v.as_str())
         .and_then(decrypt)
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
@@ -90,18 +101,32 @@ pub fn active_provider_with(creds: &Value, decrypt: &DecryptFn) -> Option<String
 pub fn jwt_payload_exp(jwt: &str) -> Option<i64> {
     let payload = jwt.split('.').nth(1)?;
     let mut padded = payload.trim_end_matches('=').to_string();
-    while padded.len() % 4 != 0 { padded.push('='); }
-    let bytes = base64::engine::general_purpose::URL_SAFE.decode(padded.as_bytes()).ok()?;
+    while padded.len() % 4 != 0 {
+        padded.push('=');
+    }
+    let bytes = base64::engine::general_purpose::URL_SAFE
+        .decode(padded.as_bytes())
+        .ok()?;
     let v: Value = serde_json::from_slice(&bytes).ok()?;
     v.get("exp").and_then(|e| e.as_i64())
 }
 
 /// 本地解码判定令牌是否已过期（容忍 tolerance 秒时钟偏差）。
 /// 兼容明文与 enc:v1 两种存法；无 token / 无 exp / 解不开一律返回 false（未过期）。
-pub fn jwt_expired_with(creds: &Value, decrypt: &DecryptFn, now_ts: i64, tolerance_secs: i64) -> bool {
-    let Some(raw) = creds.get(FIELD_TOKEN).and_then(|v| v.as_str()) else { return false };
+pub fn jwt_expired_with(
+    creds: &Value,
+    decrypt: &DecryptFn,
+    now_ts: i64,
+    tolerance_secs: i64,
+) -> bool {
+    let Some(raw) = creds.get(FIELD_TOKEN).and_then(|v| v.as_str()) else {
+        return false;
+    };
     let jwt = if raw.starts_with(ENC_PREFIX) {
-        match decrypt(raw) { Some(j) => j, None => return false }
+        match decrypt(raw) {
+            Some(j) => j,
+            None => return false,
+        }
     } else {
         raw.to_string()
     };
@@ -116,9 +141,15 @@ pub fn jwt_expired_with(creds: &Value, decrypt: &DecryptFn, now_ts: i64, toleran
 /// 同步 providerFamilyDomain；返回是否发生变更（契约：已相等时不重写时间戳）。
 /// 仅接受 zai / bigmodel 两个家族。
 pub fn apply_provider_family_domain(s: &mut Value, provider: &str, now_ms: i64) -> bool {
-    if provider != PROVIDER_ZAI && provider != PROVIDER_BIGMODEL { return false; }
-    if !s.is_object() { return false; }
-    if s.get("providerFamilyDomain").and_then(|v| v.as_str()) == Some(provider) { return false; }
+    if provider != PROVIDER_ZAI && provider != PROVIDER_BIGMODEL {
+        return false;
+    }
+    if !s.is_object() {
+        return false;
+    }
+    if s.get("providerFamilyDomain").and_then(|v| v.as_str()) == Some(provider) {
+        return false;
+    }
     s["providerFamilyDomain"] = json!(provider);
     s["providerFamilyDomainUpdatedAt"] = json!(now_ms);
     true
@@ -126,7 +157,9 @@ pub fn apply_provider_family_domain(s: &mut Value, provider: &str, now_ms: i64) 
 
 /// dataBaseDir 非空时凭据等数据文件迁往 `<dataBaseDir>/.zcode/v2`（setting.json 本身留在原处）。
 pub fn data_base_dir(setting: &Value) -> Option<String> {
-    setting.get("dataBaseDir").and_then(|v| v.as_str())
+    setting
+        .get("dataBaseDir")
+        .and_then(|v| v.as_str())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
 }
@@ -134,13 +167,20 @@ pub fn data_base_dir(setting: &Value) -> Option<String> {
 // --------------- telemetry-state.json ---------------
 
 pub fn read_device_mid(v: &Value) -> Option<String> {
-    v.get("deviceMid").and_then(|m| m.as_str()).map(String::from).filter(|m| !m.trim().is_empty())
+    v.get("deviceMid")
+        .and_then(|m| m.as_str())
+        .map(String::from)
+        .filter(|m| !m.trim().is_empty())
 }
 
 /// 写入 deviceMid；返回是否变更（no-op 契约：相等时不写）。保留对象中其他键。
 pub fn set_device_mid(v: &mut Value, mid: &str) -> bool {
-    if !v.is_object() { *v = json!({}); }
-    if v.get("deviceMid").and_then(|m| m.as_str()) == Some(mid) { return false; }
+    if !v.is_object() {
+        *v = json!({});
+    }
+    if v.get("deviceMid").and_then(|m| m.as_str()) == Some(mid) {
+        return false;
+    }
     v["deviceMid"] = json!(mid);
     true
 }
@@ -153,7 +193,9 @@ pub const ARMS_SESSION_FIELD: &str = "_arms_session";
 
 pub fn new_arms_uid() -> String {
     const ALPHABET: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
-    let suffix: String = (0..16).map(|_| ALPHABET[rand::random_range(0..36)] as char).collect();
+    let suffix: String = (0..16)
+        .map(|_| ALPHABET[rand::random_range(0..36)] as char)
+        .collect();
     format!("uid_{}", suffix)
 }
 
@@ -161,13 +203,22 @@ pub fn new_arms_uid() -> String {
 pub fn read_arms_uid_in(dirs: &[PathBuf]) -> Option<String> {
     for d in dirs {
         if let Ok(rd) = std::fs::read_dir(d) {
-            let mut files: Vec<PathBuf> = rd.flatten().map(|e| e.path())
-                .filter(|p| p.extension().map(|x| x == "json").unwrap_or(false)).collect();
-            files.sort_by_key(|p| !p.file_name().map(|n| n == ARMS_DEFAULT_STORE_FILE).unwrap_or(false));
+            let mut files: Vec<PathBuf> = rd
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().map(|x| x == "json").unwrap_or(false))
+                .collect();
+            files.sort_by_key(|p| {
+                !p.file_name()
+                    .map(|n| n == ARMS_DEFAULT_STORE_FILE)
+                    .unwrap_or(false)
+            });
             for f in files {
                 if let Ok(v) = read_json(&f) {
                     if let Some(u) = v.get(ARMS_UID_FIELD).and_then(|u| u.as_str()) {
-                        if !u.trim().is_empty() { return Some(u.to_string()); }
+                        if !u.trim().is_empty() {
+                            return Some(u.to_string());
+                        }
                     }
                 }
             }
@@ -181,21 +232,34 @@ pub fn read_arms_uid_in(dirs: &[PathBuf]) -> Option<String> {
 pub fn write_arms_uid_in(dirs: &[PathBuf], uid: &str) -> Option<String> {
     let mut first_err: Option<String> = None;
     for d in dirs {
-        let mut jsons: Vec<PathBuf> = std::fs::read_dir(d).map(|rd| rd.flatten().map(|e| e.path())
-            .filter(|p| p.extension().map(|x| x == "json").unwrap_or(false)).collect()).unwrap_or_default();
+        let mut jsons: Vec<PathBuf> = std::fs::read_dir(d)
+            .map(|rd| {
+                rd.flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().map(|x| x == "json").unwrap_or(false))
+                    .collect()
+            })
+            .unwrap_or_default();
         if jsons.is_empty() {
             let _ = std::fs::create_dir_all(d);
             jsons.push(d.join(ARMS_DEFAULT_STORE_FILE));
         }
         for f in jsons {
             let mut v = read_json(&f).unwrap_or_else(|_| json!({}));
-            if !v.is_object() { v = json!({}); }
+            if !v.is_object() {
+                v = json!({});
+            }
             if v.get(ARMS_UID_FIELD).and_then(|u| u.as_str()) == Some(uid)
-                && v.get(ARMS_SESSION_FIELD).is_none() { continue; }
+                && v.get(ARMS_SESSION_FIELD).is_none()
+            {
+                continue;
+            }
             if let Some(obj) = v.as_object_mut() {
                 obj.insert(ARMS_UID_FIELD.into(), json!(uid));
                 obj.remove(ARMS_SESSION_FIELD);
-                if let Err(e) = write_json(&f, &v) { first_err.get_or_insert(e); }
+                if let Err(e) = write_json(&f, &v) {
+                    first_err.get_or_insert(e);
+                }
             }
         }
     }
@@ -208,8 +272,12 @@ pub fn write_arms_uid_in(dirs: &[PathBuf], uid: &str) -> Option<String> {
 pub const KNOWN_CRED_KEYS: [&str; 8] = [
     FIELD_TOKEN,
     FIELD_ACTIVE_PROVIDER,
-    "oauth:zai:access_token", "oauth:zai:refresh_token", "oauth:zai:user_info",
-    "oauth:bigmodel:access_token", "oauth:bigmodel:refresh_token", "oauth:bigmodel:user_info",
+    "oauth:zai:access_token",
+    "oauth:zai:refresh_token",
+    "oauth:zai:user_info",
+    "oauth:bigmodel:access_token",
+    "oauth:bigmodel:refresh_token",
+    "oauth:bigmodel:user_info",
 ];
 
 #[derive(Default, Debug, Clone, serde::Serialize)]
@@ -221,7 +289,9 @@ pub struct FormatProbe {
 }
 
 impl FormatProbe {
-    pub fn ok(&self) -> bool { self.errors.is_empty() }
+    pub fn ok(&self) -> bool {
+        self.errors.is_empty()
+    }
 }
 
 /// 探测当前凭据对象；`None` 表示文件缺失或不可解析
@@ -229,15 +299,20 @@ pub fn probe_credentials(creds: Option<&Value>) -> FormatProbe {
     let mut p = FormatProbe::default();
     let Some(c) = creds else {
         // 缺失是「未登录 / 未安装」的常态，不是格式异常；否则首次启动会被误报成兼容性故障
-        p.notes.push("credentials.json 不存在（尚未登录 ZCode 客户端）".into());
+        p.notes
+            .push("credentials.json 不存在（尚未登录 ZCode 客户端）".into());
         return p;
     };
     let Some(obj) = c.as_object() else {
-        p.errors.push("credentials.json 结构异常（顶层非对象）".into());
+        p.errors
+            .push("credentials.json 结构异常（顶层非对象）".into());
         return p;
     };
-    let token_ok = c.get(FIELD_TOKEN).and_then(|v| v.as_str())
-        .map(|s| !s.trim().is_empty()).unwrap_or(false);
+    let token_ok = c
+        .get(FIELD_TOKEN)
+        .and_then(|v| v.as_str())
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
     if !token_ok {
         p.errors.push(format!("缺少必需键 {}", FIELD_TOKEN));
     }
@@ -269,22 +344,33 @@ pub fn probe_setting(setting: Option<&Value>) -> FormatProbe {
 /// - 其余字段（含客户端未来新增的未知字段）一律保留
 ///
 /// 调用方必须先解密并校验 provider 属于已知家族，再写前备份、写后按 token 指纹校验。
-pub fn merge_account_fields(live: &mut Value, source: &Value, provider: &str) -> Result<(), String> {
+pub fn merge_account_fields(
+    live: &mut Value,
+    source: &Value,
+    provider: &str,
+) -> Result<(), String> {
     if provider != PROVIDER_ZAI && provider != PROVIDER_BIGMODEL {
         return Err("未知账号家族，拒绝安全模式合并".into());
     }
-    let tok = source.get(FIELD_TOKEN).and_then(|v| v.as_str())
+    let tok = source
+        .get(FIELD_TOKEN)
+        .and_then(|v| v.as_str())
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .ok_or("源存档缺少有效 token")?;
     if !live.is_object() {
         return Err("当前凭据结构异常，拒绝合并——请手动备份后重试".into());
     }
-    let ap = source.get(FIELD_ACTIVE_PROVIDER).and_then(|v| v.as_str())
-        .map(|s| s.trim()).filter(|s| !s.is_empty())
+    let ap = source
+        .get(FIELD_ACTIVE_PROVIDER)
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
         .ok_or("源存档缺少 active_provider")?;
     {
-        let obj = live.as_object_mut().ok_or("当前凭据结构异常，拒绝合并——请手动备份后重试")?;
+        let obj = live
+            .as_object_mut()
+            .ok_or("当前凭据结构异常，拒绝合并——请手动备份后重试")?;
         // 先清掉两个已知家族的账号字段：避免源缺 refresh_token 时残留旧账号的令牌；
         // 非目标家族的字段也一并移除（当前账号已在切换前保鲜回存档）。
         // 未知/未来字段不在这个循环里，保持原样。
@@ -297,7 +383,9 @@ pub fn merge_account_fields(live: &mut Value, source: &Value, provider: &str) ->
         obj.insert(FIELD_ACTIVE_PROVIDER.into(), json!(ap));
         for kind in ["access_token", "refresh_token", "user_info"] {
             let key = oauth_field(provider, kind);
-            if let Some(v) = source.get(&key) { obj.insert(key, v.clone()); }
+            if let Some(v) = source.get(&key) {
+                obj.insert(key, v.clone());
+            }
         }
     }
     Ok(())
@@ -311,15 +399,24 @@ pub fn read_json(path: &Path) -> Result<Value, String> {
 }
 
 pub fn write_json(path: &Path, v: &Value) -> Result<(), String> {
-    if let Some(p) = path.parent() { std::fs::create_dir_all(p).map_err(|e| e.to_string())?; }
+    if let Some(p) = path.parent() {
+        std::fs::create_dir_all(p).map_err(|e| e.to_string())?;
+    }
     let body = serde_json::to_string_pretty(v).map_err(|e| e.to_string())?;
     // 原子写：临时文件 + rename，进程被杀也不会留下半截 JSON。
     // 临时名带随机后缀：同一文件并发写（自动检测线程 + 手动操作）不会互相踩。
-    let tmp = path.with_extension(format!("hub-tmp-{}-{}", std::process::id(), rand::random::<u32>()));
+    let tmp = path.with_extension(format!(
+        "hub-tmp-{}-{}",
+        std::process::id(),
+        rand::random::<u32>()
+    ));
     std::fs::write(&tmp, body).map_err(|e| e.to_string())?;
     match std::fs::rename(&tmp, path) {
         Ok(()) => Ok(()),
-        Err(e) => { let _ = std::fs::remove_file(&tmp); Err(e.to_string()) }
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e.to_string())
+        }
     }
 }
 
@@ -341,22 +438,30 @@ mod tests {
                 None => v.clone(),
             },
             Value::Array(a) => Value::Array(a.iter().map(materialize).collect()),
-            Value::Object(o) => Value::Object(o.iter().map(|(k, x)| (k.clone(), materialize(x))).collect()),
+            Value::Object(o) => {
+                Value::Object(o.iter().map(|(k, x)| (k.clone(), materialize(x))).collect())
+            }
             other => other.clone(),
         }
     }
     /// 与 enc_fixture 对称的假解密（不涉及真实密钥）
     fn fake_decrypt(s: &str) -> Option<String> {
         let e = base64::engine::general_purpose::URL_SAFE_NO_PAD;
-        s.strip_prefix(ENC_PREFIX).and_then(|p| e.decode(p).ok())
+        s.strip_prefix(ENC_PREFIX)
+            .and_then(|p| e.decode(p).ok())
             .and_then(|b| String::from_utf8(b).ok())
     }
 
     fn zai_creds() -> Value {
-        materialize(&serde_json::from_str(include_str!("../tests/fixtures/credentials-zai.json")).unwrap())
+        materialize(
+            &serde_json::from_str(include_str!("../tests/fixtures/credentials-zai.json")).unwrap(),
+        )
     }
     fn expired_creds() -> Value {
-        materialize(&serde_json::from_str(include_str!("../tests/fixtures/credentials-expired.json")).unwrap())
+        materialize(
+            &serde_json::from_str(include_str!("../tests/fixtures/credentials-expired.json"))
+                .unwrap(),
+        )
     }
 
     /// 字段名即契约：fixture 使用的键名集合变动必须显式过这道门
@@ -364,10 +469,18 @@ mod tests {
     fn fixture_field_names_are_the_contract() {
         let c = zai_creds();
         assert!(c.get(FIELD_TOKEN).is_some(), "zcodejwttoken 键名变动");
-        assert!(c.get(FIELD_ACTIVE_PROVIDER).is_some(), "oauth:active_provider 键名变动");
+        assert!(
+            c.get(FIELD_ACTIVE_PROVIDER).is_some(),
+            "oauth:active_provider 键名变动"
+        );
         // fixture 是 zai 存档：user_info 键按 PROVIDER 拼接，zai 键必须在场
-        assert!(c.get(FIELD_USER_INFO_KEYS[0]).is_some(), "oauth:zai:user_info 键名变动");
-        assert!(FIELD_USER_INFO_KEYS.contains(&oauth_field(PROVIDER_BIGMODEL, "user_info").as_str()));
+        assert!(
+            c.get(FIELD_USER_INFO_KEYS[0]).is_some(),
+            "oauth:zai:user_info 键名变动"
+        );
+        assert!(
+            FIELD_USER_INFO_KEYS.contains(&oauth_field(PROVIDER_BIGMODEL, "user_info").as_str())
+        );
         assert!(c.get(oauth_field(PROVIDER_ZAI, "access_token")).is_some());
         assert!(c.get(oauth_field(PROVIDER_ZAI, "refresh_token")).is_some());
     }
@@ -376,7 +489,10 @@ mod tests {
     fn label_prefers_user_info_then_jwt_claims() {
         assert_eq!(account_label_with(&zai_creds(), &fake_decrypt), "demo-user");
         // 无 user_info 的存档：回退到 JWT claims
-        assert_eq!(account_label_with(&expired_creds(), &fake_decrypt), "legacy-user");
+        assert_eq!(
+            account_label_with(&expired_creds(), &fake_decrypt),
+            "legacy-user"
+        );
     }
 
     #[test]
@@ -392,14 +508,17 @@ mod tests {
     fn b64url(s: &str) -> String {
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(s.as_bytes())
     }
-    fn make_jwt(claims: &str) -> String { format!("h.{}.s", b64url(claims)) }
+    fn make_jwt(claims: &str) -> String {
+        format!("h.{}.s", b64url(claims))
+    }
 
     #[test]
     fn label_prefers_active_provider_over_other_family() {
         // 凭据里可能残留两个家族的 user_info；必须按 active_provider 选，不能固定 zai 优先
         let mut c = zai_creds();
         c["oauth:bigmodel:user_info"] = json!(enc_fixture(
-            r#"{"id":"u-2","username":"bm-user","displayName":"BM 用户"}"#));
+            r#"{"id":"u-2","username":"bm-user","displayName":"BM 用户"}"#
+        ));
         c[FIELD_ACTIVE_PROVIDER] = json!(enc_fixture(PROVIDER_BIGMODEL));
         assert_eq!(account_label_with(&c, &fake_decrypt), "bm-user");
         c[FIELD_ACTIVE_PROVIDER] = json!(enc_fixture(PROVIDER_ZAI));
@@ -410,10 +529,12 @@ mod tests {
     fn jwt_expired_handles_enc_plain_and_tolerance() {
         let now: i64 = 1_700_000_000;
         // enc 存法 + exp 在容忍窗口内 → 已过期
-        let soon = json!({ FIELD_TOKEN: enc_fixture(&make_jwt(&format!("{{\"exp\":{}}}", now + 20))) });
+        let soon =
+            json!({ FIELD_TOKEN: enc_fixture(&make_jwt(&format!("{{\"exp\":{}}}", now + 20))) });
         assert!(jwt_expired_with(&soon, &fake_decrypt, now, 30));
         // exp 在窗口外 → 未过期
-        let fresh = json!({ FIELD_TOKEN: enc_fixture(&make_jwt(&format!("{{\"exp\":{}}}", now + 61))) });
+        let fresh =
+            json!({ FIELD_TOKEN: enc_fixture(&make_jwt(&format!("{{\"exp\":{}}}", now + 61))) });
         assert!(!jwt_expired_with(&fresh, &fake_decrypt, now, 30));
         // 明文存法（旧格式）同样可判
         let plain = json!({ FIELD_TOKEN: make_jwt("{\"exp\":9999999999}") });
@@ -427,7 +548,8 @@ mod tests {
 
     #[test]
     fn provider_family_domain_noop_and_update() {
-        let fixture: Value = serde_json::from_str(include_str!("../tests/fixtures/setting-zai.json")).unwrap();
+        let fixture: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/setting-zai.json")).unwrap();
         let mut s = fixture.clone();
         // 已相等 → no-op，时间戳不动
         let before = s["providerFamilyDomainUpdatedAt"].clone();
@@ -446,8 +568,12 @@ mod tests {
 
     #[test]
     fn data_base_dir_resolution() {
-        let fixture: Value = serde_json::from_str(include_str!("../tests/fixtures/setting-zai.json")).unwrap();
-        assert_eq!(data_base_dir(&fixture), Some("D:/demo/zcode-data".to_string()));
+        let fixture: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/setting-zai.json")).unwrap();
+        assert_eq!(
+            data_base_dir(&fixture),
+            Some("D:/demo/zcode-data".to_string())
+        );
         let empty = json!({"dataBaseDir": "  "});
         assert_eq!(data_base_dir(&empty), None);
         assert_eq!(data_base_dir(&json!({})), None);
@@ -455,7 +581,8 @@ mod tests {
 
     #[test]
     fn device_mid_set_preserves_other_keys() {
-        let mut v: Value = serde_json::from_str(include_str!("../tests/fixtures/telemetry-state.json")).unwrap();
+        let mut v: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/telemetry-state.json")).unwrap();
         assert!(set_device_mid(&mut v, "mid-demo-0002"));
         assert_eq!(v["deviceMid"], json!("mid-demo-0002"));
         assert_eq!(v["someOtherKey"], json!("kept")); // 无关键保全契约
@@ -468,18 +595,37 @@ mod tests {
 
     #[test]
     fn arms_uid_roundtrip_and_session_clear() {
-        let base = std::env::temp_dir().join(format!("zhb-fmt-arms-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos()));
+        let base = std::env::temp_dir().join(format!(
+            "zhb-fmt-arms-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
         let d1 = base.join("ZCode").join("rum-electron-store");
         let d2 = base.join("ZCode Preview").join("rum-electron-store");
         let _ = std::fs::remove_dir_all(&base);
         // 空目录：自动建 default 文件
         assert!(write_arms_uid_in(&[d1.clone(), d2.clone()], "uid_demo").is_none());
-        assert_eq!(read_arms_uid_in(&[d1.clone(), d2.clone()]), Some("uid_demo".into()));
-        let default: Value = serde_json::from_str(&std::fs::read_to_string(d1.join(ARMS_DEFAULT_STORE_FILE)).unwrap()).unwrap();
+        assert_eq!(
+            read_arms_uid_in(&[d1.clone(), d2.clone()]),
+            Some("uid_demo".into())
+        );
+        let default: Value = serde_json::from_str(
+            &std::fs::read_to_string(d1.join(ARMS_DEFAULT_STORE_FILE)).unwrap(),
+        )
+        .unwrap();
         assert_eq!(default[ARMS_UID_FIELD], json!("uid_demo"));
-        assert!(default.get(ARMS_SESSION_FIELD).is_none(), "_arms_session 必须被清除");
+        assert!(
+            default.get(ARMS_SESSION_FIELD).is_none(),
+            "_arms_session 必须被清除"
+        );
         // 第二个目录同样写入；无关键保全
-        let other: Value = serde_json::from_str(&std::fs::read_to_string(d2.join(ARMS_DEFAULT_STORE_FILE)).unwrap()).unwrap();
+        let other: Value = serde_json::from_str(
+            &std::fs::read_to_string(d2.join(ARMS_DEFAULT_STORE_FILE)).unwrap(),
+        )
+        .unwrap();
         assert_eq!(other[ARMS_UID_FIELD], json!("uid_demo"));
         // 已含其他键的文件：写 uid 时保全
         let f2 = d1.join("second.json");
@@ -489,7 +635,10 @@ mod tests {
         assert_eq!(second["keep"], json!(1));
         assert_eq!(second[ARMS_UID_FIELD], json!("uid_demo2"));
         // default 文件优先命中
-        assert_eq!(read_arms_uid_in(std::slice::from_ref(&d1)), Some("uid_demo2".into()));
+        assert_eq!(
+            read_arms_uid_in(std::slice::from_ref(&d1)),
+            Some("uid_demo2".into())
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -501,7 +650,9 @@ mod tests {
         assert!(p.notes.iter().any(|n| n.contains("unknown_future_field")));
         // 缺 token → error
         let mut no_token = zai_creds();
-        if let Some(o) = no_token.as_object_mut() { o.remove(FIELD_TOKEN); }
+        if let Some(o) = no_token.as_object_mut() {
+            o.remove(FIELD_TOKEN);
+        }
         let p = probe_credentials(Some(&no_token));
         assert!(!p.ok());
         assert!(p.errors.iter().any(|e| e.contains(FIELD_TOKEN)));
@@ -535,18 +686,37 @@ mod tests {
             "other": "preserved"
         });
         assert!(merge_account_fields(&mut live, &source, PROVIDER_ZAI).is_ok());
-        assert_ne!(live[FIELD_TOKEN], json!("enc:v1:old.token.value"), "token 必须被替换");
-        assert_eq!(live[FIELD_ACTIVE_PROVIDER], source[FIELD_ACTIVE_PROVIDER], "provider 必须跟随目标账号");
-        assert_eq!(live["oauth:zai:access_token"], source["oauth:zai:access_token"]);
+        assert_ne!(
+            live[FIELD_TOKEN],
+            json!("enc:v1:old.token.value"),
+            "token 必须被替换"
+        );
+        assert_eq!(
+            live[FIELD_ACTIVE_PROVIDER], source[FIELD_ACTIVE_PROVIDER],
+            "provider 必须跟随目标账号"
+        );
+        assert_eq!(
+            live["oauth:zai:access_token"],
+            source["oauth:zai:access_token"]
+        );
         assert_eq!(live["oauth:zai:user_info"], source["oauth:zai:user_info"]);
         assert_eq!(live["other"], json!("preserved"), "未知字段必须保留");
         assert_eq!(live["unknown_future_field"]["keep"], json!(true));
-        assert!(live.get("oauth:bigmodel:access_token").is_none(), "旧家族账号字段必须移除");
-        assert_eq!(live["oauth:zai:refresh_token"], source["oauth:zai:refresh_token"]);
+        assert!(
+            live.get("oauth:bigmodel:access_token").is_none(),
+            "旧家族账号字段必须移除"
+        );
+        assert_eq!(
+            live["oauth:zai:refresh_token"],
+            source["oauth:zai:refresh_token"]
+        );
         // 源无有效 token / 缺 provider / 未知家族 → 拒绝
         assert!(merge_account_fields(&mut live, &json!({}), PROVIDER_ZAI).is_err());
         let mut no_provider = source.clone();
-        no_provider.as_object_mut().unwrap().remove(FIELD_ACTIVE_PROVIDER);
+        no_provider
+            .as_object_mut()
+            .unwrap()
+            .remove(FIELD_ACTIVE_PROVIDER);
         assert!(merge_account_fields(&mut live, &no_provider, PROVIDER_ZAI).is_err());
         assert!(merge_account_fields(&mut live, &source, "openai").is_err());
         // live 结构异常 → 拒绝
@@ -557,7 +727,10 @@ mod tests {
     #[test]
     fn identity_helpers_read_provider() {
         let c = zai_creds();
-        assert_eq!(active_provider_with(&c, &fake_decrypt), Some(PROVIDER_ZAI.to_string()));
+        assert_eq!(
+            active_provider_with(&c, &fake_decrypt),
+            Some(PROVIDER_ZAI.to_string())
+        );
         assert_eq!(active_provider_with(&json!({}), &fake_decrypt), None);
     }
 
@@ -568,7 +741,10 @@ mod tests {
         let p = dir.join("nested").join("x.json");
         assert!(write_json(&p, &json!({"a": 1})).is_ok());
         assert_eq!(read_json(&p).unwrap()["a"], json!(1));
-        assert!(!dir.join("nested").join("x.hub-tmp").exists(), "原子写不得残留临时文件");
+        assert!(
+            !dir.join("nested").join("x.hub-tmp").exists(),
+            "原子写不得残留临时文件"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -29,7 +29,9 @@ pub(crate) fn snap_key() -> Result<Vec<u8>, String> {
 /// 可注入路径/缓存的实现：单测用临时文件钉死「失败关闭、绝不覆盖」。
 pub(crate) fn snap_key_at(f: &Path, cache: &Mutex<Option<Vec<u8>>>) -> Result<Vec<u8>, String> {
     let mut g = cache.lock().unwrap();
-    if let Some(k) = g.as_ref() { return Ok(k.clone()); }
+    if let Some(k) = g.as_ref() {
+        return Ok(k.clone());
+    }
     // 仅「文件不存在」才允许新建密钥。已存在但读/解失败必须硬失败——
     // 旧实现会生成新密钥覆盖原文件，等于让全部账号存档永久不可解。
     if !f.exists() {
@@ -47,7 +49,10 @@ pub(crate) fn snap_key_at(f: &Path, cache: &Mutex<Option<Vec<u8>>>) -> Result<Ve
     let key = platform::dpapi_operate(&enc, false)
         .map_err(|_| "快照主密钥无法用当前 Windows 用户解密（可能换了用户/机器，或被安全软件拦截）。已停止操作以免覆盖现有密钥")?;
     if key.len() != 32 {
-        return Err(format!("快照主密钥长度异常（{} 字节，应为 32）。已停止操作", key.len()));
+        return Err(format!(
+            "快照主密钥长度异常（{} 字节，应为 32）。已停止操作",
+            key.len()
+        ));
     }
     *g = Some(key.clone());
     Ok(key)
@@ -59,10 +64,13 @@ pub(crate) fn encode_snap_key(enc: &[u8]) -> String {
 }
 
 pub(crate) fn decode_snap_key(txt: &str) -> Result<Vec<u8>, String> {
-    let b64 = txt.trim().strip_prefix("dpapi:")
+    let b64 = txt
+        .trim()
+        .strip_prefix("dpapi:")
         .ok_or("快照主密钥格式异常（缺少 dpapi: 前缀）。已停止操作以免覆盖现有密钥")?;
     let engine = base64::engine::general_purpose::STANDARD;
-    engine.decode(b64)
+    engine
+        .decode(b64)
         .map_err(|_| "快照主密钥损坏（base64 解码失败）。已停止操作以免覆盖现有密钥".into())
 }
 
@@ -78,7 +86,9 @@ pub(crate) fn write_snapshot_with_key(dir: &Path, v: &Value, key: &[u8]) -> Resu
     let plain = serde_json::to_vec(v).map_err(|e| e.to_string())?;
     let iv: [u8; 12] = rand::random();
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| e.to_string())?;
-    let ct = cipher.encrypt(Nonce::from_slice(&iv), plain.as_ref()).map_err(|e| e.to_string())?;
+    let ct = cipher
+        .encrypt(Nonce::from_slice(&iv), plain.as_ref())
+        .map_err(|e| e.to_string())?;
     let engine = base64::engine::general_purpose::STANDARD;
     let body = format!("{}{}.{}", SNAP_MAGIC, engine.encode(iv), engine.encode(ct));
     // 原子写：临时名带随机后缀，进程被杀也不会留下半截快照
@@ -86,8 +96,14 @@ pub(crate) fn write_snapshot_with_key(dir: &Path, v: &Value, key: &[u8]) -> Resu
     let tmp = dir.join(format!("credentials.hub-tmp-{}", rand::random::<u32>()));
     std::fs::write(&tmp, body).map_err(|e| e.to_string())?;
     match std::fs::rename(&tmp, dir.join("credentials.snap")) {
-        Ok(()) => { let _ = std::fs::remove_file(dir.join(CRED_FILE)); Ok(()) } // 旧格式副本不再保留
-        Err(e) => { let _ = std::fs::remove_file(&tmp); Err(e.to_string()) }
+        Ok(()) => {
+            let _ = std::fs::remove_file(dir.join(CRED_FILE));
+            Ok(())
+        } // 旧格式副本不再保留
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e.to_string())
+        }
     }
 }
 
@@ -112,17 +128,31 @@ pub(crate) fn read_snapshot_checked(dir: &Path) -> Result<Value, String> {
 /// 只处理 DPAPI 快照文件（旧格式升级由 read_snapshot_checked 负责）。
 pub(crate) fn read_snapshot_with_key(dir: &Path, key: &[u8]) -> Result<Value, String> {
     let snap = dir.join("credentials.snap");
-    if !snap.exists() { return Err("存档不存在".into()); }
+    if !snap.exists() {
+        return Err("存档不存在".into());
+    }
     let txt = std::fs::read_to_string(&snap).map_err(|e| format!("存档读取失败: {}", e))?;
-    let body = txt.trim().strip_prefix(SNAP_MAGIC).ok_or("存档格式异常（未知前缀）")?;
+    let body = txt
+        .trim()
+        .strip_prefix(SNAP_MAGIC)
+        .ok_or("存档格式异常（未知前缀）")?;
     let engine = base64::engine::general_purpose::STANDARD;
     let mut it = body.split('.');
-    let iv = engine.decode(it.next().ok_or("存档格式异常（缺 IV）")?).map_err(|_| "存档格式异常（IV）")?;
-    let ct = engine.decode(it.next().ok_or("存档格式异常（缺密文）")?).map_err(|_| "存档格式异常（密文）")?;
-    if iv.len() != 12 { return Err("存档格式异常（IV 长度不是 12）".into()); }
-    if ct.len() < 16 { return Err("存档格式异常（密文过短）".into()); }
+    let iv = engine
+        .decode(it.next().ok_or("存档格式异常（缺 IV）")?)
+        .map_err(|_| "存档格式异常（IV）")?;
+    let ct = engine
+        .decode(it.next().ok_or("存档格式异常（缺密文）")?)
+        .map_err(|_| "存档格式异常（密文）")?;
+    if iv.len() != 12 {
+        return Err("存档格式异常（IV 长度不是 12）".into());
+    }
+    if ct.len() < 16 {
+        return Err("存档格式异常（密文过短）".into());
+    }
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| e.to_string())?;
-    let plain = cipher.decrypt(Nonce::from_slice(&iv), ct.as_ref())
+    let plain = cipher
+        .decrypt(Nonce::from_slice(&iv), ct.as_ref())
         .map_err(|_| "存档无法解密（密钥不匹配或文件损坏）")?;
     serde_json::from_slice(&plain).map_err(|e| format!("存档 JSON 损坏: {}", e))
 }
@@ -133,9 +163,14 @@ pub(crate) fn read_snapshot_value(dir: &Path) -> Option<Value> {
 
 pub(crate) fn credential_secret() -> String {
     if let Ok(env) = std::env::var("ZCODE_CREDENTIAL_SECRET") {
-        if !env.trim().is_empty() { return env.trim().to_string(); }
+        if !env.trim().is_empty() {
+            return env.trim().to_string();
+        }
     }
-    let home = dirs::home_dir().unwrap_or_default().to_string_lossy().to_string();
+    let home = dirs::home_dir()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
     let user = whoami::username().unwrap_or_default();
     format!("zcode-credential-fallback:win32:{}:{}", home, user)
 }
@@ -151,29 +186,45 @@ pub(crate) fn derive_key(secret: &str) -> zeroize::Zeroizing<[u8; 32]> {
 pub(crate) fn encrypt_with(key: &[u8; 32], plain: &str) -> Result<String, String> {
     let iv: [u8; 12] = rand::random();
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| e.to_string())?;
-    let ct = cipher.encrypt(Nonce::from_slice(&iv), plain.as_bytes()).map_err(|e| e.to_string())?;
+    let ct = cipher
+        .encrypt(Nonce::from_slice(&iv), plain.as_bytes())
+        .map_err(|e| e.to_string())?;
     let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
     // 布局必须与 decrypt_with 一致：IV.TAG.CT（tag 在中段，密文在末段）
-    Ok(format!("{}{}.{}.{}", ENC_PREFIX, engine.encode(iv), engine.encode(&ct[ct.len()-16..]), engine.encode(&ct[..ct.len()-16])))
+    Ok(format!(
+        "{}{}.{}.{}",
+        ENC_PREFIX,
+        engine.encode(iv),
+        engine.encode(&ct[ct.len() - 16..]),
+        engine.encode(&ct[..ct.len() - 16])
+    ))
 }
 
 pub(crate) fn decrypt_with(key: &[u8; 32], encrypted: &str) -> Result<String, String> {
     let payload = encrypted.strip_prefix(ENC_PREFIX).ok_or("not encrypted")?;
     let parts: Vec<&str> = payload.split('.').collect();
-    if parts.len() != 3 { return Err("invalid format".into()); }
+    if parts.len() != 3 {
+        return Err("invalid format".into());
+    }
     let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let iv = engine.decode(parts[0]).map_err(|e| e.to_string())?;
     let tag = engine.decode(parts[1]).map_err(|e| e.to_string())?;
     let ct = engine.decode(parts[2]).map_err(|e| e.to_string())?;
     // 长度必须显式校验：GenericArray::from_slice 在长度不符时会 panic，
     // 而这里读的是本地文件（可能损坏/被改），不能让启动/刷新路径崩掉。
-    if iv.len() != 12 { return Err("invalid iv length".into()); }
-    if tag.len() != 16 { return Err("invalid tag length".into()); }
+    if iv.len() != 12 {
+        return Err("invalid iv length".into());
+    }
+    if tag.len() != 16 {
+        return Err("invalid tag length".into());
+    }
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| e.to_string())?;
     let nonce = Nonce::from_slice(&iv);
     let mut combined = ct;
     combined.extend_from_slice(&tag);
-    let plain = cipher.decrypt(nonce, combined.as_ref()).map_err(|e| e.to_string())?;
+    let plain = cipher
+        .decrypt(nonce, combined.as_ref())
+        .map_err(|e| e.to_string())?;
     String::from_utf8(plain).map_err(|e| e.to_string())
 }
 
@@ -193,11 +244,18 @@ pub(crate) fn bundle_key(password: &str, salt: &[u8]) -> zeroize::Zeroizing<[u8;
 
 /// 口令包加密：salt || iv || AES-GCM(ct||tag)，外层 "ZHB1:" + base64。
 /// 抽成纯函数便于往返/口令错误/截断测试；随机数由调用方注入。
-pub(crate) fn encode_bundle(bundle: &Value, password: &str, salt: &[u8; 16], iv: &[u8; 12]) -> Result<String, String> {
+pub(crate) fn encode_bundle(
+    bundle: &Value,
+    password: &str,
+    salt: &[u8; 16],
+    iv: &[u8; 12],
+) -> Result<String, String> {
     let plain = serde_json::to_vec(bundle).map_err(|e| e.to_string())?;
     let key = bundle_key(password, salt);
     let cipher = Aes256Gcm::new_from_slice(&key[..]).map_err(|e| e.to_string())?;
-    let ct = cipher.encrypt(Nonce::from_slice(iv), plain.as_ref()).map_err(|e| e.to_string())?;
+    let ct = cipher
+        .encrypt(Nonce::from_slice(iv), plain.as_ref())
+        .map_err(|e| e.to_string())?;
     let mut raw = Vec::new();
     raw.extend_from_slice(salt);
     raw.extend_from_slice(iv);
@@ -207,15 +265,22 @@ pub(crate) fn encode_bundle(bundle: &Value, password: &str, salt: &[u8; 16], iv:
 }
 
 pub(crate) fn decode_bundle(raw: &str, password: &str) -> Result<Value, String> {
-    let body = raw.trim().strip_prefix("ZHB1:").ok_or("不是 ZCode Hub 备份文件")?;
+    let body = raw
+        .trim()
+        .strip_prefix("ZHB1:")
+        .ok_or("不是 ZCode Hub 备份文件")?;
     let engine = base64::engine::general_purpose::STANDARD;
     let data = engine.decode(body.trim()).map_err(|_| "文件损坏")?;
-    if data.len() < 28 + 16 { return Err("文件损坏".into()); }
+    if data.len() < 28 + 16 {
+        return Err("文件损坏".into());
+    }
     let (salt, rest) = data.split_at(16);
     let (iv, ct) = rest.split_at(12);
     let key = bundle_key(password, salt);
     let cipher = Aes256Gcm::new_from_slice(&key[..]).map_err(|e| e.to_string())?;
-    let plain = cipher.decrypt(Nonce::from_slice(iv), ct).map_err(|_| "口令错误或文件损坏")?;
+    let plain = cipher
+        .decrypt(Nonce::from_slice(iv), ct)
+        .map_err(|_| "口令错误或文件损坏")?;
     serde_json::from_slice(&plain).map_err(|_| "文件损坏".into())
 }
 
@@ -225,7 +290,11 @@ mod tests {
 
     fn temp_dir(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!(
-            "zhb-test-{}-{}-{}", tag, std::process::id(), rand::random::<u32>()));
+            "zhb-test-{}-{}-{}",
+            tag,
+            std::process::id(),
+            rand::random::<u32>()
+        ));
         std::fs::create_dir_all(&d).unwrap();
         d
     }
@@ -246,7 +315,7 @@ mod tests {
         let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
         assert_eq!(engine.decode(parts[0]).unwrap().len(), 12); // nonce
         assert_eq!(engine.decode(parts[1]).unwrap().len(), 16); // tag
-        assert!(engine.decode(parts[2]).unwrap().len() >= 3);   // ciphertext
+        assert!(engine.decode(parts[2]).unwrap().len() >= 3); // ciphertext
     }
 
     #[test]
@@ -295,7 +364,11 @@ mod tests {
             std::fs::write(&f, bad).unwrap();
             let cache = std::sync::Mutex::new(None);
             assert!(snap_key_at(&f, &cache).is_err());
-            assert_eq!(std::fs::read_to_string(&f).unwrap(), bad, "损坏的密钥文件不得被覆盖");
+            assert_eq!(
+                std::fs::read_to_string(&f).unwrap(),
+                bad,
+                "损坏的密钥文件不得被覆盖"
+            );
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -330,11 +403,14 @@ mod tests {
         // 错误密钥必须失败，而不是返回空/垃圾
         assert!(read_snapshot_with_key(&dir, &[8u8; 32]).is_err());
         // 损坏的 IV/tag 长度不能 panic
-        std::fs::write(dir.join("credentials.snap"), format!("{}AAAA.AAAA.AAAA", SNAP_MAGIC)).unwrap();
+        std::fs::write(
+            dir.join("credentials.snap"),
+            format!("{}AAAA.AAAA.AAAA", SNAP_MAGIC),
+        )
+        .unwrap();
         assert!(read_snapshot_with_key(&dir, &key).is_err());
         std::fs::remove_file(dir.join("credentials.snap")).unwrap();
         assert!(read_snapshot_with_key(&dir, &key).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
-
 }

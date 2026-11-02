@@ -29,18 +29,30 @@ pub fn key_hash(key: &str) -> String {
 }
 
 fn legacy_name(key: &str) -> String {
-    key.chars().map(|c| if c.is_alphanumeric() || "-_.@".contains(c) { c } else { '_' }).collect()
+    key.chars()
+        .map(|c| {
+            if c.is_alphanumeric() || "-_.@".contains(c) {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 pub fn history_path(app_data: &Path, key: &str) -> PathBuf {
-    app_data.join("quota-history").join(format!("{}.jsonl", key_hash(key)))
+    app_data
+        .join("quota-history")
+        .join(format!("{}.jsonl", key_hash(key)))
 }
 
 /// 兼容旧版本以账号 key 直接命名的历史文件：首次访问时改名为哈希名。
 pub fn ensure_history_path(app_data: &Path, key: &str) -> PathBuf {
     let p = history_path(app_data, key);
     if !p.exists() {
-        let legacy = app_data.join("quota-history").join(format!("{}.jsonl", legacy_name(key)));
+        let legacy = app_data
+            .join("quota-history")
+            .join(format!("{}.jsonl", legacy_name(key)));
         if legacy.exists() && legacy != p {
             let _ = std::fs::rename(&legacy, &p);
         }
@@ -53,29 +65,49 @@ pub fn sample_from_quota(resp: &Value, now: i64) -> Option<Value> {
     let balances = resp.get("data")?.get("data")?.get("balances")?.as_array()?;
     let mut out = Vec::new();
     for b in balances {
-        let plan_id = b.get("plan_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let model = b.get("show_name").and_then(|v| v.as_str())
+        let plan_id = b
+            .get("plan_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let model = b
+            .get("show_name")
+            .and_then(|v| v.as_str())
             .or_else(|| b.get("model").and_then(|v| v.as_str()))
-            .unwrap_or("?").to_string();
-        let available = b.get("available_units").and_then(|v| v.as_f64())
+            .unwrap_or("?")
+            .to_string();
+        let available = b
+            .get("available_units")
+            .and_then(|v| v.as_f64())
             .or_else(|| b.get("remaining_units").and_then(|v| v.as_f64()))
             .unwrap_or(0.0);
         let total = b.get("total_units").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        let expires_at = b.get("expires_at").and_then(|v| v.as_i64())
+        let expires_at = b
+            .get("expires_at")
+            .and_then(|v| v.as_i64())
             .or_else(|| b.get("period_end").and_then(|v| v.as_i64()));
         out.push(json!({"plan_id": plan_id, "model": model, "available": available, "total": total, "expires_at": expires_at}));
     }
-    if out.is_empty() { None } else { Some(json!({"ts": now, "balances": out})) }
+    if out.is_empty() {
+        None
+    } else {
+        Some(json!({"ts": now, "balances": out}))
+    }
 }
 
 /// 逐行解析历史；坏行容忍跳过
 pub fn load_history(path: &Path) -> Vec<(i64, Value)> {
-    let Ok(content) = std::fs::read_to_string(path) else { return Vec::new() };
-    content.lines().filter_map(|l| {
-        let v: Value = serde_json::from_str(l).ok()?;
-        let ts = v.get("ts")?.as_i64()?;
-        Some((ts, v))
-    }).collect()
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    content
+        .lines()
+        .filter_map(|l| {
+            let v: Value = serde_json::from_str(l).ok()?;
+            let ts = v.get("ts")?.as_i64()?;
+            Some((ts, v))
+        })
+        .collect()
 }
 
 type HistoryRows = Vec<(i64, Value)>;
@@ -86,20 +118,31 @@ type HistoryCacheEntry = (u64, u64, HistoryRows);
 static HISTORY_CACHE: Mutex<Option<HashMap<PathBuf, HistoryCacheEntry>>> = Mutex::new(None);
 
 pub fn load_history_cached(path: &Path) -> Vec<(i64, Value)> {
-    let meta = match std::fs::metadata(path) { Ok(m) => m, Err(_) => return Vec::new() };
-    let mtime = meta.modified().ok()
+    let meta = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(_) => return Vec::new(),
+    };
+    let mtime = meta
+        .modified()
+        .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_nanos() as u64).unwrap_or(0);
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
     let len = meta.len();
     {
         let mut g = HISTORY_CACHE.lock().unwrap();
         let cache = g.get_or_insert_with(HashMap::new);
         if let Some((m, l, rows)) = cache.get(path) {
-            if *m == mtime && *l == len { return rows.clone(); }
+            if *m == mtime && *l == len {
+                return rows.clone();
+            }
         }
     }
     let rows = load_history(path);
-    HISTORY_CACHE.lock().unwrap().get_or_insert_with(HashMap::new)
+    HISTORY_CACHE
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
         .insert(path.to_path_buf(), (mtime, len, rows.clone()));
     rows
 }
@@ -112,46 +155,71 @@ fn last_sample_ts(path: &Path) -> Option<i64> {
     f.seek(SeekFrom::Start(start)).ok()?;
     let mut buf = String::new();
     f.read_to_string(&mut buf).ok()?;
-    buf.lines().rev().find_map(|l| {
-        serde_json::from_str::<Value>(l).ok()?.get("ts")?.as_i64()
-    })
+    buf.lines()
+        .rev()
+        .find_map(|l| serde_json::from_str::<Value>(l).ok()?.get("ts")?.as_i64())
 }
 
 fn atomic_write(path: &Path, body: &str) -> Result<(), String> {
-    if let Some(p) = path.parent() { std::fs::create_dir_all(p).map_err(|e| e.to_string())?; }
-    let tmp = path.with_extension(format!("hub-tmp-{}-{}", std::process::id(), rand::random::<u32>()));
+    if let Some(p) = path.parent() {
+        std::fs::create_dir_all(p).map_err(|e| e.to_string())?;
+    }
+    let tmp = path.with_extension(format!(
+        "hub-tmp-{}-{}",
+        std::process::id(),
+        rand::random::<u32>()
+    ));
     std::fs::write(&tmp, body).map_err(|e| e.to_string())?;
     match std::fs::rename(&tmp, path) {
         Ok(()) => Ok(()),
-        Err(e) => { let _ = std::fs::remove_file(&tmp); Err(e.to_string()) }
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e.to_string())
+        }
     }
 }
 
 /// 追加样本：尾部节流；仅在体积/保留期需要时裁剪。返回是否真正写入。
 pub fn append_sample(path: &Path, sample: &Value, now: i64) -> Result<bool, String> {
-    if sample.get("ts").and_then(|v| v.as_i64()) != Some(now) { return Err("sample ts mismatch".into()); }
+    if sample.get("ts").and_then(|v| v.as_i64()) != Some(now) {
+        return Err("sample ts mismatch".into());
+    }
     let last = last_sample_ts(path);
     if let Some(last_ts) = last {
-        if now - last_ts < SAMPLE_MIN_GAP_SECS { return Ok(false); }
+        if now - last_ts < SAMPLE_MIN_GAP_SECS {
+            return Ok(false);
+        }
     }
     let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    let need_compact = size > COMPACT_MAX_BYTES
-        || last.map(|t| now - t > RETENTION_SECS).unwrap_or(false);
-    let line = format!("{}\n", serde_json::to_string(sample).map_err(|e| e.to_string())?);
+    let need_compact =
+        size > COMPACT_MAX_BYTES || last.map(|t| now - t > RETENTION_SECS).unwrap_or(false);
+    let line = format!(
+        "{}\n",
+        serde_json::to_string(sample).map_err(|e| e.to_string())?
+    );
     if need_compact {
         let mut body = String::new();
-        for (_, v) in load_history(path).iter().filter(|(ts, _)| now - ts <= RETENTION_SECS) {
+        for (_, v) in load_history(path)
+            .iter()
+            .filter(|(ts, _)| now - ts <= RETENTION_SECS)
+        {
             body += &format!("{}\n", v);
         }
         body += &line;
         atomic_write(path, &body)?;
         return Ok(true);
     }
-    if let Some(p) = path.parent() { std::fs::create_dir_all(p).map_err(|e| e.to_string())?; }
+    if let Some(p) = path.parent() {
+        std::fs::create_dir_all(p).map_err(|e| e.to_string())?;
+    }
     use std::io::Write as _;
-    std::fs::OpenOptions::new().create(true).append(true).open(path)
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
         .map_err(|e| e.to_string())?
-        .write_all(line.as_bytes()).map_err(|e| e.to_string())?;
+        .write_all(line.as_bytes())
+        .map_err(|e| e.to_string())?;
     Ok(true)
 }
 
@@ -162,26 +230,47 @@ pub fn forecast(samples: &[(i64, Value)]) -> Vec<Value> {
     for (ts, s) in samples {
         if let Some(balances) = s.get("balances").and_then(|v| v.as_array()) {
             for b in balances {
-                let plan_id = b.get("plan_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let model = b.get("model").and_then(|v| v.as_str()).unwrap_or("?").to_string();
+                let plan_id = b
+                    .get("plan_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let model = b
+                    .get("model")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?")
+                    .to_string();
                 let avail = b.get("available").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                groups.entry((plan_id, model)).or_default().push((*ts, avail));
+                groups
+                    .entry((plan_id, model))
+                    .or_default()
+                    .push((*ts, avail));
             }
         }
     }
     let mut out = Vec::new();
     for ((plan_id, model), mut pts) in groups {
         pts.sort_by_key(|(ts, _)| *ts);
-        if pts.len() < 2 { continue; }
+        if pts.len() < 2 {
+            continue;
+        }
         let (t0, a0) = pts[0];
         let (t1, a1) = *pts.last().unwrap();
         let hours = (t1 - t0) as f64 / 3600.0;
-        if hours < MIN_WINDOW_HOURS { continue; }
+        if hours < MIN_WINDOW_HOURS {
+            continue;
+        }
         let rate_per_day = (a1 - a0) / hours * 24.0;
-        if rate_per_day >= -1e-9 || a1 <= 0.0 { continue; }
+        if rate_per_day >= -1e-9 || a1 <= 0.0 {
+            continue;
+        }
         let days = a1 / -rate_per_day;
-        if days > 3650.0 { continue; } // 消耗极慢，无提醒价值
-        out.push(json!({"plan_id": plan_id, "model": model, "days_left": (days * 10.0).round() / 10.0}));
+        if days > 3650.0 {
+            continue;
+        } // 消耗极慢，无提醒价值
+        out.push(
+            json!({"plan_id": plan_id, "model": model, "days_left": (days * 10.0).round() / 10.0}),
+        );
     }
     out
 }
@@ -195,8 +284,15 @@ mod tests {
     }
 
     fn tmp_dir(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("zhb-hist-{}-{}-{}", tag, std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos()));
+        let d = std::env::temp_dir().join(format!(
+            "zhb-hist-{}-{}-{}",
+            tag,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
         let _ = std::fs::remove_dir_all(&d);
         d
     }
@@ -226,10 +322,20 @@ mod tests {
         assert!(append_sample(&p, &mk(1000), 1000).unwrap());
         assert!(!append_sample(&p, &mk(1001), 1001).unwrap()); // 间隔不足 → 跳过
         assert_eq!(load_history(&p).len(), 1);
-        assert!(append_sample(&p, &mk(1000 + SAMPLE_MIN_GAP_SECS), 1000 + SAMPLE_MIN_GAP_SECS).unwrap());
+        assert!(append_sample(
+            &p,
+            &mk(1000 + SAMPLE_MIN_GAP_SECS),
+            1000 + SAMPLE_MIN_GAP_SECS
+        )
+        .unwrap());
         assert_eq!(load_history(&p).len(), 2);
         // 老样本被裁剪：写入 31 天后的样本，只有 30 天内的留下
-        append_sample(&p, &mk(1000 + RETENTION_SECS + 86400), 1000 + RETENTION_SECS + 86400).unwrap();
+        append_sample(
+            &p,
+            &mk(1000 + RETENTION_SECS + 86400),
+            1000 + RETENTION_SECS + 86400,
+        )
+        .unwrap();
         let kept = load_history(&p);
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].0, 1000 + RETENTION_SECS + 86400);
@@ -247,8 +353,17 @@ mod tests {
         let mk = |ts: i64| json!({"ts": ts, "balances": [{"plan_id": "p", "model": "m", "available": 1.0, "total": 2.0}]});
         append_sample(&p, &mk(1000), 1000).unwrap();
         assert_eq!(load_history_cached(&p).len(), 1);
-        append_sample(&p, &mk(1000 + SAMPLE_MIN_GAP_SECS), 1000 + SAMPLE_MIN_GAP_SECS).unwrap();
-        assert_eq!(load_history_cached(&p).len(), 2, "file size 变化后缓存必须失效");
+        append_sample(
+            &p,
+            &mk(1000 + SAMPLE_MIN_GAP_SECS),
+            1000 + SAMPLE_MIN_GAP_SECS,
+        )
+        .unwrap();
+        assert_eq!(
+            load_history_cached(&p).len(),
+            2,
+            "file size 变化后缓存必须失效"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -267,15 +382,17 @@ mod tests {
 
     #[test]
     fn forecast_linear_and_guards() {
-        let mk = |ts: i64, consuming: f64, refilling: f64| (ts, json!({"ts": ts, "balances": [
-            {"plan_id": "p", "model": "consuming", "available": consuming, "total": 100.0, "expires_at": null},
-            {"plan_id": "p", "model": "refilling", "available": refilling, "total": 100.0, "expires_at": null}
-        ]}));
+        let mk = |ts: i64, consuming: f64, refilling: f64| {
+            (
+                ts,
+                json!({"ts": ts, "balances": [
+                    {"plan_id": "p", "model": "consuming", "available": consuming, "total": 100.0, "expires_at": null},
+                    {"plan_id": "p", "model": "refilling", "available": refilling, "total": 100.0, "expires_at": null}
+                ]}),
+            )
+        };
         // 24 小时窗口：consuming 80 → 40，速率 -40/天 → 还剩 1 天；refilling 递增 → 跳过
-        let samples = vec![
-            mk(0, 80.0, 20.0),
-            mk(86400, 40.0, 90.0),
-        ];
+        let samples = vec![mk(0, 80.0, 20.0), mk(86400, 40.0, 90.0)];
         let f = forecast(&samples);
         assert_eq!(f.len(), 1, "refilling 组速率 ≥ 0 必须跳过: {:?}", f);
         assert_eq!(f[0]["plan_id"], json!("p"));

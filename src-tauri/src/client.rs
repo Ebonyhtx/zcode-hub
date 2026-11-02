@@ -22,7 +22,11 @@ pub(crate) const DEFAULT_CLIENT_VERSION: &str = "3.17.1";
 pub(crate) fn zcode_client_version() -> Option<String> {
     let mut g = VERSION_CACHE.lock().unwrap();
     let now = chrono::Utc::now().timestamp();
-    if let Some((ts, v)) = g.as_ref() { if now - ts < 3600 { return v.clone(); } }
+    if let Some((ts, v)) = g.as_ref() {
+        if now - ts < 3600 {
+            return v.clone();
+        }
+    }
     let v = zcode_exe_path().and_then(|exe| platform::exe_product_version(&exe));
     *g = Some((now, v.clone()));
     v
@@ -45,10 +49,15 @@ pub(crate) fn compat_report(live: Option<&Value>) -> serde_json::Value {
     let ver = zcode_client_version();
     match &ver {
         Some(v) if !client_version_supported(v) => {
-            probe.errors.push(format!("客户端版本 {} 与已验证版本 {} 不同，文件格式可能已变化", v, SUPPORTED_CLIENT_VERSION));
+            probe.errors.push(format!(
+                "客户端版本 {} 与已验证版本 {} 不同，文件格式可能已变化",
+                v, SUPPORTED_CLIENT_VERSION
+            ));
         }
         Some(_) => {}
-        None => probe.notes.push("未检测到 ZCode 客户端版本（未安装或未指定路径）".into()),
+        None => probe
+            .notes
+            .push("未检测到 ZCode 客户端版本（未安装或未指定路径）".into()),
     }
     json!({"ok": probe.ok(), "errors": probe.errors, "notes": probe.notes, "zcode_version": ver,
            "installed": zcode_exe_path().is_some()})
@@ -63,36 +72,55 @@ pub(crate) fn zcode_exe_path() -> Option<String> {
     {
         let g = EXE_CACHE.lock().unwrap();
         if let Some((ts, p)) = g.as_ref() {
-            if now - ts < EXE_CACHE_SECS { return p.clone(); }
+            if now - ts < EXE_CACHE_SECS {
+                return p.clone();
+            }
         }
     }
     // 用户在设置里指定的路径优先（失效则回落到自动探测，探测在 platform.rs）
-    let user_path = load_settings().get("zcode_path").and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    let user_path = load_settings()
+        .get("zcode_path")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
         .filter(|p| std::path::Path::new(p).exists());
     let found = platform::detect_zcode_exe(user_path.as_deref());
     *EXE_CACHE.lock().unwrap() = Some((now, found.clone()));
     found
 }
 
-pub(crate) fn zcode_running() -> Result<bool, String> { platform::zcode_running() }
+pub(crate) fn zcode_running() -> Result<bool, String> {
+    platform::zcode_running()
+}
 
-pub(crate) fn kill_zcode_process() -> Result<bool, String> { platform::kill_zcode_process() }
+pub(crate) fn kill_zcode_process() -> Result<bool, String> {
+    platform::kill_zcode_process()
+}
 
-pub(crate) fn launch_zcode_process(exe: &str) -> bool { platform::launch_zcode_process(exe) }
+pub(crate) fn launch_zcode_process(exe: &str) -> bool {
+    platform::launch_zcode_process(exe)
+}
 
 // 客户端完整版本号（事件上报/接口要求 "x.y.z" 形态；失败回退兼容锚点）
 pub(crate) fn client_app_version() -> String {
-    zcode_client_version().map(|v| {
-        let parts: Vec<&str> = v.split('.').collect();
-        if parts.len() >= 3 { format!("{}.{}.{}", parts[0], parts[1], parts[2]) } else { v }
-    }).unwrap_or_else(|| DEFAULT_CLIENT_VERSION.to_string())
+    zcode_client_version()
+        .map(|v| {
+            let parts: Vec<&str> = v.split('.').collect();
+            if parts.len() >= 3 {
+                format!("{}.{}.{}", parts[0], parts[1], parts[2])
+            } else {
+                v
+            }
+        })
+        .unwrap_or_else(|| DEFAULT_CLIENT_VERSION.to_string())
 }
 
 #[tauri::command]
 pub(crate) fn open_zcode_client() -> serde_json::Value {
     let exe = zcode_exe_path().unwrap_or_default();
-    if exe.is_empty() { return json!({"ok": false, "error": "未找到 ZCode 客户端，请在设置中指定路径"}); }
+    if exe.is_empty() {
+        return json!({"ok": false, "error": "未找到 ZCode 客户端，请在设置中指定路径"});
+    }
     json!({"ok": launch_zcode_process(&exe)})
 }
 
@@ -100,13 +128,14 @@ pub(crate) fn open_zcode_client() -> serde_json::Value {
 pub(crate) fn kill_zcode_client() -> serde_json::Value {
     match kill_zcode_process() {
         Ok(true) => json!({"ok": true}),
-        Ok(false) => json!({"ok": false, "error": "无法关闭 ZCode（可能仍在托盘运行），请手动退出"}),
+        Ok(false) => {
+            json!({"ok": false, "error": "无法关闭 ZCode（可能仍在托盘运行），请手动退出"})
+        }
         Err(e) => json!({"ok": false, "error": format!("无法确认 ZCode 进程状态：{}", e)}),
     }
 }
 
 pub(crate) static HTTP: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
-
 
 #[cfg(test)]
 mod tests {
@@ -120,5 +149,4 @@ mod tests {
         assert!(!client_version_supported("4.0"));
         assert!(!client_version_supported("3.1"));
     }
-
 }

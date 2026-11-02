@@ -15,7 +15,7 @@ Switches only the login identity — projects, sessions and settings stay untouc
 
 <p align="center"><img src="docs/screenshot-en.png" width="620" alt="ZCode Hub main window"></p>
 
-*Screenshot shows built-in demo data, not real accounts.*
+*Screenshot shows built-in demo data, not real accounts. Wide layout: [docs/screenshots/main-1200.png](docs/screenshots/main-1200.png).*
 
 ## Features
 
@@ -27,6 +27,9 @@ Switches only the login identity — projects, sessions and settings stay untouc
 - **Encrypted snapshots** — AES-256-GCM whole-file encryption, random key sealed with Windows DPAPI (bound to current user + machine)
 - **Password backups** — portable `.zhb` v2 bundles (PBKDF2-HMAC-SHA256 120k + AES-256-GCM) re-encrypted for the target machine
 - **UX** — light / dark theme, custom titlebar, window geometry memory, autostart, close-to-tray, start minimized, rename & manual reorder, undo delete, claim history, 2/3-column wide layout, bilingual UI (zh/en)
+- **Account organization** — search, current/has-benefits/expired filters, custom tags, pinning; tray quick-switch submenu and `Ctrl+Shift+Z` global toggle
+- **Alerts & recovery** — quota expiry / below-10% notifications, periodic update alerts, daily local auto-backup (7 copies) plus portable `.zhb`, import preview (new/duplicate/needs re-login)
+- **Maintainability** — single-instance guard, redacted diagnostics export, claim-history JSON export, Playwright functional E2E with failure screenshots, cargo-deny supply-chain gate
 
 ## Install
 
@@ -42,6 +45,9 @@ Grab `ZCode Hub_x.x.x_x64-setup.exe` from [Releases](../../releases). Windows 10
 | Claim | When detected, "Claim" opens a browser captcha; Hub submits the claim and refreshes automatically |
 | Backup / migrate | "Backup / Import" → set password → export `.zhb` → import on another machine (v2 re-encrypts fields for the target) |
 | To tray | Titlebar ✕ follows the close behavior setting (tray or quit); real exit = tray icon → Quit |
+| Find an account | Search box + filter chips; pin from the card, edit tags from the tag button |
+| Switch without opening | Tray → Quick switch, or `Ctrl+Shift+Z` to toggle the window |
+| Recover / migrate | Settings → "Back up now" for a local restore point; use `.zhb` for cross-machine migration |
 
 ## Security model
 
@@ -56,12 +62,23 @@ See [SECURITY.md](SECURITY.md) for the full data-storage & encryption design. Hi
 
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the leak-guard hooks, tests and the release process. Architecture & design notes: [docs/DESIGN.md](docs/DESIGN.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the leak-guard hooks, tests and the release process.
 
 ```bash
-cargo test                          # unit tests (src-tauri)
+cd src-tauri
+cargo test && cargo clippy --all-targets -- -D warnings
+cargo deny check        # RustSec / licenses / bans / sources
+cd ..
+npm ci && npx playwright install chromium && npm run test:e2e
 npx --yes @tauri-apps/cli build --bundles nsis
 ```
+
+## Docs
+
+- [Architecture & security model](docs/DESIGN.md)
+- [FAQ](docs/FAQ.md)
+- [Troubleshooting](docs/TROUBLESHOOTING.md)
+- [Performance baseline](docs/PERFORMANCE.md)
 
 ## License
 

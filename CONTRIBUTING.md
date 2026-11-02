@@ -12,13 +12,18 @@
 cd src-tauri && cargo build
 # 运行单元测试
 cargo test
-# 零警告门禁
+# 格式 / 零警告门禁
+cargo fmt --check
 cargo clippy --all-targets -- -D warnings
+# 依赖策略（RustSec / licenses / bans / sources）
+cargo deny check
 # 打安装包（与 CI 相同的 CLI 版本）
 npx --yes @tauri-apps/cli@2.12.4 build --bundles nsis
 # 前端脚本语法 + 中英键集合一致性
 node --check ui/app.js
 node scripts/i18n-check.js
+# UI 功能 E2E（真实页面 + mock Tauri IPC）
+npm ci && npx playwright install chromium && npm run test:e2e
 ```
 
 ## 防泄密机制（必读）
@@ -60,6 +65,7 @@ git config core.hooksPath .githooks
 
 - 提交信息用英文 conventional 风格（`feat:` / `fix:` / `chore:` / `docs:`）
 - 涉及加密 / 路径处理 / 解析逻辑的改动请附单元测试（各模块底部 `mod tests`，参考 `crypto.rs` / `quota.rs`）
+- UI 交互改动请补 `tests/ui/` 的 Playwright 用例；CI 会跑真实页面 + mock IPC，失败时自动上传截图
 - `cargo test` 必须全绿；UI 改动请同时 `node --check ui/app.js`
 - 改动 UI 文案时记得同步 `ui/app.js` 里 `I18N` 的中英两份字典
 

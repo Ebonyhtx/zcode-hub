@@ -5,10 +5,26 @@
 
 ## [未发布]
 
+### 新增
+- 账号搜索、筛选（当前 / 有福利 / 已过期）、自定义标签与置顶
+- 托盘「快速切换」子菜单、`Ctrl+Shift+Z` 全局唤出、单实例守护
+- 额度即将到期 / 低于 10% 通知；每 24 小时检查新版本并提醒
+- 每日自动本地备份（保留 7 份）+ 设置内「立即备份」；导入 `.zhb` 前预览新增/重复/需重登
+- 领取历史 JSON 导出；脱敏诊断报告导出（无 token/邮箱/展示名）
+- 设置新增额度提醒、自动备份、新版本提醒开关
+
+### 安全与工程
+- 启用 Dependabot security alerts 与 automated security fixes
+- CI 新增 `cargo-deny`（RustSec advisories / licenses / bans / sources）与 `cargo fmt --check`
+- 发布流程生成 SPDX JSON SBOM 并随 Release 上传
+- CI 新增 Playwright 功能 E2E（真实页面 + mock IPC），失败自动上传截图
+- 新增 9 个 UI E2E 用例；Rust 单测 65 个
+
 ### 内部
-- 将单文件 `main.rs` 拆分为 util / crypto / identity / profiles / quota / benefits / settings / client / system / window / oauth / app 模块；`main.rs` 只保留入口与 37 个命令注册，行为不变
+- 将单文件 `main.rs` 拆分为 util / crypto / identity / profiles / quota / benefits / settings / client / system / window / oauth / app / backup / diagnostics 模块；`main.rs` 只保留入口与命令注册，行为不变
 - GitHub Actions 全部改为完整 commit SHA 固定（checkout v5.1.0、rust-cache v2.9.3、upload-artifact v4.6.2、action-gh-release v2.6.2、rust-toolchain stable 分支），并保留版本注释
-- 拆分前新增 12 个边界回归测试：snapkey 损坏绝不覆盖、快照篡改/错误密钥、`.zhb` 口令备份往返、回收站路径穿越、设置夹取与枚举校验、额度 HTTP/业务错误分类、福利计划去重、客户端版本兼容；Rust 测试总数为 58
+- 拆分前新增 12 个边界回归测试：snapkey 损坏绝不覆盖、快照篡改/错误密钥、`.zhb` 口令备份往返、回收站路径穿越、设置夹取与枚举校验、额度 HTTP/业务错误分类、福利计划去重、客户端版本兼容
+- 新增 FAQ / 故障排查 / 性能基线文档与文档截图；`cargo fmt` 全仓格式化
 
 ## [1.9.1] - 2026-11-03
 

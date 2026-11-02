@@ -14,8 +14,14 @@ use crate::util::{audit_log, cred_path, denied, profiles_dir, safe_key, sanitize
 
 #[derive(serde::Serialize)]
 pub(crate) struct ProfileInfo {
-    pub(crate) key: String, pub(crate) label: String, pub(crate) captured_at: String, pub(crate) is_current: bool,
-    pub(crate) provider: String, pub(crate) jwt_expired: bool,
+    pub(crate) key: String,
+    pub(crate) label: String,
+    pub(crate) captured_at: String,
+    pub(crate) is_current: bool,
+    pub(crate) provider: String,
+    pub(crate) jwt_expired: bool,
+    /// 用户自定义标签（meta.json），用于搜索/筛选。
+    pub(crate) tags: Vec<String>,
     /// 快照无法读取/解密时的具体原因（前端显示“存档异常”，不再静默消失）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) error: Option<String>,
@@ -25,8 +31,14 @@ pub(crate) struct ProfileInfo {
 pub(crate) fn cred_fingerprint(creds: &Value) -> Option<String> {
     let raw = creds.get(formats::FIELD_TOKEN).and_then(|v| v.as_str())?;
     // 兼容旧明文存档：enc:v1 才解密，否则把原文当作 token
-    let plain = if raw.starts_with(ENC_PREFIX) { decrypt_value(raw).ok()? } else { raw.to_string() };
-    if plain.trim().is_empty() { return None; }
+    let plain = if raw.starts_with(ENC_PREFIX) {
+        decrypt_value(raw).ok()?
+    } else {
+        raw.to_string()
+    };
+    if plain.trim().is_empty() {
+        return None;
+    }
     let mut h = Sha256::new();
     h.update(plain.as_bytes());
     let d = h.finalize();
@@ -40,10 +52,16 @@ pub(crate) fn find_profile_dir_for_live(live: &Value) -> Option<PathBuf> {
     let mut by_label: Option<PathBuf> = None;
     if let Ok(rd) = std::fs::read_dir(profiles_dir()) {
         for e in rd.flatten() {
-            if !e.path().is_dir() { continue; }
-            let Ok(v) = read_snapshot_checked(&e.path()) else { continue };
+            if !e.path().is_dir() {
+                continue;
+            }
+            let Ok(v) = read_snapshot_checked(&e.path()) else {
+                continue;
+            };
             if let (Some(a), Some(b)) = (fp.as_ref(), cred_fingerprint(&v)) {
-                if *a == b { return Some(e.path()); }
+                if *a == b {
+                    return Some(e.path());
+                }
             } else if by_label.is_none() && account_label(&v) == label {
                 by_label = Some(e.path());
             }
@@ -53,16 +71,24 @@ pub(crate) fn find_profile_dir_for_live(live: &Value) -> Option<PathBuf> {
 }
 
 pub(crate) fn profile_label(meta: &Value, creds: &Value) -> String {
-    meta.get("label").and_then(|v| v.as_str()).map(|s| s.trim()).filter(|s| !s.is_empty())
-        .map(String::from).unwrap_or_else(|| account_label(creds))
+    meta.get("label")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .unwrap_or_else(|| account_label(creds))
 }
 
 pub(crate) fn find_profile_by_fingerprint(fp: &str) -> Option<PathBuf> {
     if let Ok(rd) = std::fs::read_dir(profiles_dir()) {
         for e in rd.flatten() {
-            if !e.path().is_dir() { continue; }
+            if !e.path().is_dir() {
+                continue;
+            }
             if let Ok(v) = read_snapshot_checked(&e.path()) {
-                if cred_fingerprint(&v).as_deref() == Some(fp) { return Some(e.path()); }
+                if cred_fingerprint(&v).as_deref() == Some(fp) {
+                    return Some(e.path());
+                }
             }
         }
     }
@@ -75,7 +101,10 @@ pub(crate) fn find_profile_by_fingerprint(fp: &str) -> Option<PathBuf> {
 pub(crate) fn unique_profile_dir(preferred: &str, creds: &Value) -> (PathBuf, String, bool) {
     if let Some(fp) = cred_fingerprint(creds) {
         if let Some(dir) = find_profile_by_fingerprint(&fp) {
-            let name = dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let name = dir
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
             return (dir, name, true);
         }
     }
@@ -91,7 +120,12 @@ pub(crate) fn unique_profile_dir(preferred: &str, creds: &Value) -> (PathBuf, St
 
 // 令牌过期判定（30s 时钟容忍）；收敛在 formats.rs，兼容明文与 enc:v1 两种存法
 pub(crate) fn jwt_expired(creds: &Value) -> bool {
-    formats::jwt_expired_with(creds, &|s: &str| decrypt_value(s).ok(), chrono::Utc::now().timestamp(), 30)
+    formats::jwt_expired_with(
+        creds,
+        &|s: &str| decrypt_value(s).ok(),
+        chrono::Utc::now().timestamp(),
+        30,
+    )
 }
 
 pub(crate) fn account_label(creds: &Value) -> String {
@@ -101,25 +135,39 @@ pub(crate) fn account_label(creds: &Value) -> String {
 #[tauri::command(async)]
 pub(crate) fn capture_profile(name: Option<String>) -> serde_json::Value {
     let src = cred_path();
-    if !src.exists() { return json!({"ok": false, "error": "未找到登录凭证"}); }
-    let creds = match read_json(&src) { Ok(c) => c, Err(e) => return json!({"ok": false, "error": e}) };
+    if !src.exists() {
+        return json!({"ok": false, "error": "未找到登录凭证"});
+    }
+    let creds = match read_json(&src) {
+        Ok(c) => c,
+        Err(e) => return json!({"ok": false, "error": e}),
+    };
     let label = account_label(&creds);
     let base = name.unwrap_or_else(|| label.clone());
     let (dd, fname, updated) = unique_profile_dir(&base, &creds);
     if let Err(e) = write_snapshot(&dd, &creds) {
-        if !updated { let _ = std::fs::remove_dir_all(&dd); }
+        if !updated {
+            let _ = std::fs::remove_dir_all(&dd);
+        }
         return json!({"ok": false, "error": format!("存档写入失败: {}", e)});
     }
-    let provider = formats::active_provider_with(&creds, &|s: &str| decrypt_value(s).ok()).unwrap_or_default();
+    let provider =
+        formats::active_provider_with(&creds, &|s: &str| decrypt_value(s).ok()).unwrap_or_default();
     let mut meta = read_json(&dd.join("meta.json")).ok().unwrap_or(json!({}));
-    let keep_label = meta.get("label").and_then(|v| v.as_str()).map(String::from).unwrap_or_else(|| label.clone());
+    let keep_label = meta
+        .get("label")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .unwrap_or_else(|| label.clone());
     meta["label"] = json!(if updated { keep_label } else { base.clone() });
     meta["provider"] = json!(provider);
     meta["captured_at"] = json!(chrono::Utc::now().to_rfc3339());
     let _mid = ensure_profile_device_mid(&dd, &mut meta, true);
     let _auid = ensure_profile_arms_uid(&dd, &mut meta, true);
     if let Err(e) = write_json(&dd.join("meta.json"), &meta) {
-        if !updated { let _ = std::fs::remove_dir_all(&dd); }
+        if !updated {
+            let _ = std::fs::remove_dir_all(&dd);
+        }
         return json!({"ok": false, "error": format!("账号元数据写入失败: {}", e)});
     }
     audit_log("capture", Some(&fname), json!({"updated": updated}));
@@ -130,7 +178,9 @@ pub(crate) fn hot_swap_verified(cur: &Path, target: &Value, original: Option<&Va
     // 写入后回读两次，比较 token 明文指纹（不是展示名——同名账号会误判成功）。
     // 三次失败必须恢复原文件：调用方可能随后走冷切换，不能让 live 停在半切换状态。
     let expected = cred_fingerprint(target);
-    let Some(expected) = expected else { return false };
+    let Some(expected) = expected else {
+        return false;
+    };
     for attempt in 0..3u32 {
         if write_json(cur, target).is_err() {
             std::thread::sleep(std::time::Duration::from_millis(250 * (attempt as u64 + 1)));
@@ -140,22 +190,31 @@ pub(crate) fn hot_swap_verified(cur: &Path, target: &Value, original: Option<&Va
             if cred_fingerprint(&v1).as_deref() == Some(expected.as_str()) {
                 std::thread::sleep(std::time::Duration::from_millis(150));
                 if let Ok(v2) = read_json(cur) {
-                    if cred_fingerprint(&v2).as_deref() == Some(expected.as_str()) { return true; }
+                    if cred_fingerprint(&v2).as_deref() == Some(expected.as_str()) {
+                        return true;
+                    }
                 }
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(250 * (attempt as u64 + 1)));
     }
-    if let Some(orig) = original { let _ = write_json(cur, orig); }
+    if let Some(orig) = original {
+        let _ = write_json(cur, orig);
+    }
     false
 }
 
 /// 把当前 live 登录保鲜回其存档（按 token 指纹匹配）；找不到时自动新建 autosave。
 /// 失败必须让调用方中止切换——不能在无法保全当前账号时继续写 live。
 pub(crate) fn preserve_current_login(live: &Value) -> Result<(), String> {
-    let has_token = live.get(formats::FIELD_TOKEN).and_then(|v| v.as_str())
-        .map(|s| !s.trim().is_empty()).unwrap_or(false);
-    if !has_token { return Ok(()); }
+    let has_token = live
+        .get(formats::FIELD_TOKEN)
+        .and_then(|v| v.as_str())
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    if !has_token {
+        return Ok(());
+    }
     if let Some(dir) = find_profile_dir_for_live(live) {
         return write_snapshot(&dir, live).map_err(|e| format!("无法保全当前登录: {}", e));
     }
@@ -163,9 +222,12 @@ pub(crate) fn preserve_current_login(live: &Value) -> Result<(), String> {
     let dir = profiles_dir().join(&auto);
     write_snapshot(&dir, live).map_err(|e| format!("无法为当前登录创建存档: {}", e))?;
     let label = account_label(live);
-    let provider = formats::active_provider_with(live, &|s: &str| decrypt_value(s).ok()).unwrap_or_default();
-    let _ = write_json(&dir.join("meta.json"),
-        &json!({"label": label, "provider": provider, "captured_at": chrono::Utc::now().to_rfc3339()}));
+    let provider =
+        formats::active_provider_with(live, &|s: &str| decrypt_value(s).ok()).unwrap_or_default();
+    let _ = write_json(
+        &dir.join("meta.json"),
+        &json!({"label": label, "provider": provider, "captured_at": chrono::Utc::now().to_rfc3339()}),
+    );
     Ok(())
 }
 
@@ -189,7 +251,9 @@ pub(crate) fn preserve_corrupt_live(cur: &Path) {
 
 #[tauri::command(async)]
 pub(crate) fn switch_profile(key: String, hot: Option<bool>) -> serde_json::Value {
-    if let Err(e) = safe_key(&key) { return denied(e); }
+    if let Err(e) = safe_key(&key) {
+        return denied(e);
+    }
     let prof_dir = profiles_dir().join(&key);
     let prof_v = match read_snapshot_checked(&prof_dir) {
         Ok(v) => v,
@@ -200,10 +264,15 @@ pub(crate) fn switch_profile(key: String, hot: Option<bool>) -> serde_json::Valu
     // 三态探测：探测失败不能当作“未运行”，否则可能在客户端运行时替换凭据
     let was = match zcode_running() {
         Ok(v) => v,
-        Err(e) => return json!({"ok": false, "error": format!("无法确认 ZCode 是否在运行（{}）。为避免在客户端运行时改凭据，已取消切换", e)}),
+        Err(e) => {
+            return json!({"ok": false, "error": format!("无法确认 ZCode 是否在运行（{}）。为避免在客户端运行时改凭据，已取消切换", e)})
+        }
     };
     let want_hot = hot.unwrap_or(false)
-        && load_settings().get("hot_switch").and_then(|v| v.as_bool()).unwrap_or(false)
+        && load_settings()
+            .get("hot_switch")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
         && was;
     let dec = |s: &str| decrypt_value(s).ok();
     let target_provider = formats::active_provider_with(&prof_v, &dec).unwrap_or_default();
@@ -211,29 +280,49 @@ pub(crate) fn switch_profile(key: String, hot: Option<bool>) -> serde_json::Valu
         return json!({"ok": false, "error": "目标存档缺少有效的 provider，拒绝切换"});
     }
     let live_creds = read_json(&cur).ok();
-    let live_probe_bad = live_creds.as_ref()
+    let live_probe_bad = live_creds
+        .as_ref()
         .map(|v| !formats::probe_credentials(Some(v)).ok())
         .unwrap_or(false);
-    let safe_requested = load_settings().get("safe_mode").and_then(|v| v.as_bool()).unwrap_or(false);
+    let safe_requested = load_settings()
+        .get("safe_mode")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     // ---------------- 安全模式：只合并账号身份字段，保留未知字段 ----------------
     if (safe_requested || live_probe_bad) && live_creds.is_some() {
         let original = live_creds.clone().unwrap_or_else(|| json!({}));
         if let Err(e) = preserve_current_login(&original) {
-            audit_log("switch", Some(&key), json!({"mode": "safe", "result": "fail", "error": "preserve_failed"}));
+            audit_log(
+                "switch",
+                Some(&key),
+                json!({"mode": "safe", "result": "fail", "error": "preserve_failed"}),
+            );
             return json!({"ok": false, "error": format!("{}。为避免丢失当前账号，已取消切换", e)});
         }
         let mut merged = original.clone();
         if let Err(e) = formats::merge_account_fields(&mut merged, &prof_v, &target_provider) {
-            audit_log("switch", Some(&key), json!({"mode": "safe", "result": "fail", "error": e}));
+            audit_log(
+                "switch",
+                Some(&key),
+                json!({"mode": "safe", "result": "fail", "error": e}),
+            );
             return json!({"ok": false, "error": format!("安全模式合并失败：{}", e)});
         }
         if !hot_swap_verified(&cur, &merged, Some(&original)) {
-            audit_log("switch", Some(&key), json!({"mode": "safe", "result": "fail", "error": "verify_failed"}));
+            audit_log(
+                "switch",
+                Some(&key),
+                json!({"mode": "safe", "result": "fail", "error": "verify_failed"}),
+            );
             return json!({"ok": false, "error": "安全模式写入验证失败，已恢复原文件"});
         }
         apply_switch_identity(&prof_dir, &target_provider);
-        audit_log("switch", Some(&key), json!({"mode": "safe", "result": "ok"}));
+        audit_log(
+            "switch",
+            Some(&key),
+            json!({"mode": "safe", "result": "ok"}),
+        );
         return json!({"ok": true, "hot": true, "safe": true, "relaunched": false});
     }
 
@@ -258,8 +347,12 @@ pub(crate) fn switch_profile(key: String, hot: Option<bool>) -> serde_json::Valu
         // 先杀干净再动文件——绝不在客户端运行时替换凭据
         match kill_zcode_process() {
             Ok(true) => {}
-            Ok(false) => return json!({"ok": false, "error": "无法关闭 ZCode（可能仍在托盘运行），请手动退出 ZCode 后重试"}),
-            Err(e) => return json!({"ok": false, "error": format!("无法确认 ZCode 进程已退出（{}），已取消切换", e)}),
+            Ok(false) => {
+                return json!({"ok": false, "error": "无法关闭 ZCode（可能仍在托盘运行），请手动退出 ZCode 后重试"})
+            }
+            Err(e) => {
+                return json!({"ok": false, "error": format!("无法确认 ZCode 进程已退出（{}），已取消切换", e)})
+            }
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
@@ -268,35 +361,61 @@ pub(crate) fn switch_profile(key: String, hot: Option<bool>) -> serde_json::Valu
     let had_backup = if cur.exists() {
         if let Ok(cur_v) = read_json(&cur) {
             if let Err(e) = preserve_current_login(&cur_v) {
-                if was { let _ = exe.as_ref().map(|e| launch_zcode_process(e)); }
+                if was {
+                    let _ = exe.as_ref().map(|e| launch_zcode_process(e));
+                }
                 return json!({"ok": false, "error": format!("{}。为避免丢失当前账号，已取消切换", e)});
             }
         }
         std::fs::copy(&cur, &backup).is_ok()
-    } else { false };
+    } else {
+        false
+    };
     if let Err(e) = write_json(&cur, &prof_v) {
         if had_backup {
             match std::fs::copy(&backup, &cur) {
                 Ok(_) => {
                     let _ = std::fs::remove_file(&backup);
-                    audit_log("switch", Some(&key), json!({"mode": "cold", "result": "fail", "error": "write_failed_restored"}));
+                    audit_log(
+                        "switch",
+                        Some(&key),
+                        json!({"mode": "cold", "result": "fail", "error": "write_failed_restored"}),
+                    );
                     return json!({"ok": false, "error": format!("替换凭据文件失败（{}），已恢复原文件", e)});
                 }
                 Err(e2) => {
-                    audit_log("switch", Some(&key), json!({"mode": "cold", "result": "fail", "error": "restore_failed"}));
+                    audit_log(
+                        "switch",
+                        Some(&key),
+                        json!({"mode": "cold", "result": "fail", "error": "restore_failed"}),
+                    );
                     return json!({"ok": false, "critical": true,
                         "error": format!("替换凭据失败且恢复也失败（{} / {}）。请从“备份/导入”恢复，或重新登录 ZCode", e, e2)});
                 }
             }
         }
-        audit_log("switch", Some(&key), json!({"mode": "cold", "result": "fail", "error": "write_failed"}));
+        audit_log(
+            "switch",
+            Some(&key),
+            json!({"mode": "cold", "result": "fail", "error": "write_failed"}),
+        );
         return json!({"ok": false, "error": format!("替换凭据文件失败：{}", e)});
     }
     // 替换成功后回滚副本使命结束
     let _ = std::fs::remove_file(&backup);
     apply_switch_identity(&prof_dir, &target_provider);
-    let rel = if was { exe.as_ref().map(|e| launch_zcode_process(e)).unwrap_or(false) } else { false };
-    audit_log("switch", Some(&key), json!({"mode": "cold", "result": "ok", "relaunched": rel}));
+    let rel = if was {
+        exe.as_ref()
+            .map(|e| launch_zcode_process(e))
+            .unwrap_or(false)
+    } else {
+        false
+    };
+    audit_log(
+        "switch",
+        Some(&key),
+        json!({"mode": "cold", "result": "ok", "relaunched": rel}),
+    );
     json!({"ok": true, "relaunched": rel})
 }
 
@@ -314,14 +433,20 @@ pub(crate) fn live_device_mid() -> Option<String> {
 
 pub(crate) fn ensure_profile_device_mid(dir: &Path, meta: &mut Value, allow_live: bool) -> String {
     if let Some(m) = meta.get("device_mid").and_then(|v| v.as_str()) {
-        if !m.trim().is_empty() { return m.to_string(); }
+        if !m.trim().is_empty() {
+            return m.to_string();
+        }
     }
     let mut taken: Vec<String> = Vec::new();
     if let Ok(rd) = std::fs::read_dir(profiles_dir()) {
         for e in rd.flatten() {
-            if e.path().as_path() == dir { continue; }
+            if e.path().as_path() == dir {
+                continue;
+            }
             if let Ok(m) = read_json(&e.path().join("meta.json")) {
-                if let Some(dm) = m.get("device_mid").and_then(|v| v.as_str()) { taken.push(dm.to_string()); }
+                if let Some(dm) = m.get("device_mid").and_then(|v| v.as_str()) {
+                    taken.push(dm.to_string());
+                }
             }
         }
     }
@@ -336,13 +461,17 @@ pub(crate) fn ensure_profile_device_mid(dir: &Path, meta: &mut Value, allow_live
 pub(crate) fn write_live_device_mid(mid: &str) {
     let p = v2_dir().join("telemetry-state.json");
     let mut v = read_json(&p).unwrap_or_else(|_| json!({}));
-    if formats::set_device_mid(&mut v, mid) { let _ = write_json(&p, &v); }
+    if formats::set_device_mid(&mut v, mid) {
+        let _ = write_json(&p, &v);
+    }
 }
 
 // arms_uid：阿里云 RUM 遥测的用户标识，存于 %APPDATA% 下 ZCode 的 rum-electron-store/*.json 的 _arms_uid。
 // 与 deviceMid 同策略：每账号独立，首次采纳当前值（未被占用时），否则生成新的。
 // 目录枚举在 platform.rs（Windows 客户端专属布局）。
-pub(crate) fn arms_store_dirs() -> Vec<PathBuf> { platform::arms_store_dirs() }
+pub(crate) fn arms_store_dirs() -> Vec<PathBuf> {
+    platform::arms_store_dirs()
+}
 
 pub(crate) fn read_live_arms_uid() -> Option<String> {
     formats::read_arms_uid_in(&arms_store_dirs())
@@ -356,14 +485,20 @@ pub(crate) fn write_live_arms_uid(uid: &str) {
 
 pub(crate) fn ensure_profile_arms_uid(dir: &Path, meta: &mut Value, allow_live: bool) -> String {
     if let Some(u) = meta.get("arms_uid").and_then(|v| v.as_str()) {
-        if !u.trim().is_empty() { return u.to_string(); }
+        if !u.trim().is_empty() {
+            return u.to_string();
+        }
     }
     let mut taken: Vec<String> = Vec::new();
     if let Ok(rd) = std::fs::read_dir(profiles_dir()) {
         for e in rd.flatten() {
-            if e.path().as_path() == dir { continue; }
+            if e.path().as_path() == dir {
+                continue;
+            }
             if let Ok(m) = read_json(&e.path().join("meta.json")) {
-                if let Some(u) = m.get("arms_uid").and_then(|v| v.as_str()) { taken.push(u.to_string()); }
+                if let Some(u) = m.get("arms_uid").and_then(|v| v.as_str()) {
+                    taken.push(u.to_string());
+                }
             }
         }
     }
@@ -377,24 +512,38 @@ pub(crate) fn ensure_profile_arms_uid(dir: &Path, meta: &mut Value, allow_live: 
 
 pub(crate) fn sync_provider_family_domain(provider: &str) {
     let p = v2_dir().join("setting.json");
-    let mut s = match read_json(&p) { Ok(s) => s, Err(_) => return };
-    if formats::apply_provider_family_domain(&mut s, provider, chrono::Utc::now().timestamp_millis()) {
+    let mut s = match read_json(&p) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    if formats::apply_provider_family_domain(
+        &mut s,
+        provider,
+        chrono::Utc::now().timestamp_millis(),
+    ) {
         let _ = write_json(&p, &s);
     }
 }
 
 pub(crate) fn telemetry_device_mid() -> String {
-    read_json(&v2_dir().join("telemetry-state.json")).ok()
-        .and_then(|v| formats::read_device_mid(&v)).unwrap_or_default()
+    read_json(&v2_dir().join("telemetry-state.json"))
+        .ok()
+        .and_then(|v| formats::read_device_mid(&v))
+        .unwrap_or_default()
 }
 
 // 每账号虚拟设备标识（meta.json 的 device_mid）。非当前账号的 API 请求必须用它：
 // 服务端按 账号×设备 校验，用错 deviceMid 会导致 preview 列表为空 / claim 被风控拒绝(3012)。
 pub(crate) fn profile_device_mid(key: &str) -> Option<String> {
-    if key == "__current__" { return Some(telemetry_device_mid()); }
-    read_json(&profiles_dir().join(key).join("meta.json")).ok()?
-        .get("device_mid").and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    if key == "__current__" {
+        return Some(telemetry_device_mid());
+    }
+    read_json(&profiles_dir().join(key).join("meta.json"))
+        .ok()?
+        .get("device_mid")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 pub(crate) fn api_device_mid(key: &str) -> String {
@@ -406,7 +555,9 @@ pub(crate) fn api_device_mid(key: &str) -> String {
         }
         return mid;
     }
-    if let Some(mid) = profile_device_mid(key) { return mid; }
+    if let Some(mid) = profile_device_mid(key) {
+        return mid;
+    }
     // 非当前账号缺设备标识时生成并持久化；绝不回退到 live（那会与当前账号共享设备）
     let dir = profiles_dir().join(key);
     let mut meta = read_json(&dir.join("meta.json")).ok().unwrap_or(json!({}));
@@ -417,8 +568,11 @@ pub(crate) fn api_device_mid(key: &str) -> String {
 
 // 读取某账号的凭据快照（用于事件上报的 user_id）
 pub(crate) fn cred_for_key(key: &str) -> Option<Value> {
-    if key == "__current__" { read_json(&cred_path()).ok() }
-    else { read_snapshot_value(&profiles_dir().join(key)) }
+    if key == "__current__" {
+        read_json(&cred_path()).ok()
+    } else {
+        read_snapshot_value(&profiles_dir().join(key))
+    }
 }
 
 pub(crate) fn get_jwt_token(key: &str) -> Result<String, String> {
@@ -427,8 +581,15 @@ pub(crate) fn get_jwt_token(key: &str) -> Result<String, String> {
     } else {
         read_snapshot_value(&profiles_dir().join(key)).ok_or("profile not found")?
     };
-    let raw = creds.get(formats::FIELD_TOKEN).and_then(|v| v.as_str()).ok_or("no jwt")?;
-    if raw.starts_with(ENC_PREFIX) { decrypt_value(raw) } else { Ok(raw.to_string()) }
+    let raw = creds
+        .get(formats::FIELD_TOKEN)
+        .and_then(|v| v.as_str())
+        .ok_or("no jwt")?;
+    if raw.starts_with(ENC_PREFIX) {
+        decrypt_value(raw)
+    } else {
+        Ok(raw.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -478,5 +639,4 @@ mod tests {
         let dirs = arms_store_dirs();
         assert!(dirs.iter().all(|d| d.file_name().is_some()));
     }
-
 }

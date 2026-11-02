@@ -17,6 +17,7 @@
 │  src-tauri/src/{window,settings}.rs       ← 窗口几何 / 设置              │
 │  src-tauri/src/{oauth,app}.rs             ← OAuth / 托盘 / 通知 / 状态   │
 │  src-tauri/src/{crypto,util}.rs           ← 快照加密 / 原子写 / 隐私 key │
+│  src-tauri/src/{backup,diagnostics}.rs    ← 备份 / 诊断 / 启动基线       │
 │   └─ 守卫: safe_key 路径穿越校验 / 原子写入 / 泄密扫描                        │
 │  src-tauri/src/formats.rs                  ← 客户端文件格式纯逻辑（注入式）   │
 │   └─ credentials / setting / telemetry-state / arms store + 契约测试        │
@@ -73,11 +74,15 @@
   绝不生成新密钥覆盖（否则全部存档永久不可解）。
 - **`.zhb` 备份 v2**：导出时用本机密钥解开 `enc:v1` 字段，放入外层口令加密（PBKDF2 + AES-256-GCM）的 bundle；
   导入时用目标机密钥重新加密，因此可跨用户名/跨机器恢复。v1 旧备份仍可导入，无法解密的账号会标记为需重新登录。
+- **本地自动备份**：每 24h 把 `profiles/`（DPAPI 快照）与设置复制到 `backups/<时间戳>/`，默认保留 7 份；
+  它是本机恢复点，不跨机。跨机仍用 `.zhb`。导入前 `inspect_bundle` 只解密预览（新增/重复/需重登），确认后才写入。
+- **诊断报告**：设置里导出的脱敏 JSON 只含版本、OS/架构、兼容状态、哈希后的账号/额度摘要、审计与启动日志尾部，
+  不含 token、邮箱、展示名或真实账号目录名。
 - **审计/额度历史/福利持久化**：账号 key 只以 SHA-256 前 16 位形式落盘（文件名/JSON 键），不出现邮箱或昵称。
 
 ## 测试策略
 
-- **Rust 单测**（各模块底部的 `mod tests`，共 58 个）：
+- **Rust 单测**（各模块底部的 `mod tests`，共 65 个）：
   加密往返与布局守护、畸形 IV 拒绝、路径穿越、JWT 过期、marketing/preview 解析、原子写入、
   安全模式合并、热切换验证回路、历史追加/裁剪、审计轮转、验证码回环、KDF —— 纯函数优先，不碰真实凭据
 - **格式契约测试**（`src-tauri/tests/fixtures/*.json` + `formats::tests`）：脱敏构造的客户端

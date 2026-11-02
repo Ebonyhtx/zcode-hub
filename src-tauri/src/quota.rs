@@ -25,18 +25,103 @@ pub(crate) fn quota_status_error(status: u16, retry_after: Option<u64>, now: i64
 
 /// 业务 code 失败 → 错误对象；5xx/429 视为可重试，其余为业务错误。
 pub(crate) fn quota_business_error(code: i64, msg: &str, now: i64) -> Value {
-    let msg = if msg.trim().is_empty() { "额度接口返回错误" } else { msg };
+    let msg = if msg.trim().is_empty() {
+        "额度接口返回错误"
+    } else {
+        msg
+    };
     let transient = code == 429 || (500..=599).contains(&code);
     json!({"ok": false, "code": if transient { "server" } else { "business" },
            "transient": transient, "error": msg, "fetched_at": now})
 }
 
 /// 成功响应缓存 90s、失败 20s，避免同一时刻反复打接口。
-pub(crate) fn quota_cache_ttl(ok: bool) -> i64 { if ok { 90 } else { 20 } }
+pub(crate) fn quota_cache_ttl(ok: bool) -> i64 {
+    if ok {
+        90
+    } else {
+        20
+    }
+}
+
+fn expiry_secs(raw: i64) -> i64 {
+    if raw > 10_000_000_000 {
+        raw / 1000
+    } else {
+        raw
+    }
+}
+
+/// 扫描额度缓存，找出「即将到期」或「剩余比例偏低」的账号。
+/// 每个账号最多一条（到期优先）。value 对 expiry 是剩余小时，对 low 是剩余百分比。
+pub(crate) fn quota_alerts(
+    map: &std::collections::HashMap<String, (i64, Value)>,
+    now: i64,
+    low_percent: f64,
+    expiry_hours: i64,
+) -> Vec<Value> {
+    let mut out = Vec::new();
+    for (key, (_ts, resp)) in map {
+        if resp.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+            continue;
+        }
+        let Some(balances) = resp
+            .pointer("/data/data/balances")
+            .and_then(|v| v.as_array())
+        else {
+            continue;
+        };
+        let (mut avail, mut total) = (0.0f64, 0.0f64);
+        let mut min_h: Option<f64> = None;
+        for b in balances {
+            avail += b
+                .get("available_units")
+                .and_then(|v| v.as_f64())
+                .or_else(|| b.get("remaining_units").and_then(|v| v.as_f64()))
+                .unwrap_or(0.0);
+            total += b.get("total_units").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            if let Some(raw) = b
+                .get("expires_at")
+                .and_then(|v| v.as_i64())
+                .or_else(|| b.get("period_end").and_then(|v| v.as_i64()))
+            {
+                let h = (expiry_secs(raw) - now) as f64 / 3600.0;
+                if h > 0.0 && min_h.map(|m| h < m).unwrap_or(true) {
+                    min_h = Some(h);
+                }
+            }
+        }
+        let ratio = if total > 0.0 {
+            avail / total * 100.0
+        } else {
+            100.0
+        };
+        if let Some(h) = min_h.filter(|h| *h <= expiry_hours as f64) {
+            out.push(
+                json!({"key": key, "reason": "expiry", "value": h.round() as i64,
+                            "available": avail, "total": total}),
+            );
+        } else if total > 0.0 && ratio <= low_percent {
+            out.push(
+                json!({"key": key, "reason": "low", "value": ratio.round() as i64,
+                            "available": avail, "total": total}),
+            );
+        }
+    }
+    out.sort_by_key(|v| {
+        v.get("key")
+            .and_then(|k| k.as_str())
+            .unwrap_or("")
+            .to_string()
+    });
+    out
+}
 
 #[tauri::command(async)]
 pub(crate) fn fetch_quota(key: String, force: Option<bool>) -> serde_json::Value {
-    if let Err(e) = safe_key(&key) { return denied(e); }
+    if let Err(e) = safe_key(&key) {
+        return denied(e);
+    }
     load_quota_cache_once();
     let now = chrono::Utc::now().timestamp();
     if !force.unwrap_or(false) {
@@ -51,21 +136,33 @@ pub(crate) fn fetch_quota(key: String, force: Option<bool>) -> serde_json::Value
             }
         }
     }
-    let token = match get_jwt_token(&key) { Ok(t) => t, Err(e) => return json!({"ok": false, "code": "auth", "error": e}) };
+    let token = match get_jwt_token(&key) {
+        Ok(t) => t,
+        Err(e) => return json!({"ok": false, "code": "auth", "error": e}),
+    };
     let mid = api_device_mid(&key);
     if mid.trim().is_empty() {
         return json!({"ok": false, "code": "device", "error": "账号缺少设备标识，请切换一次该账号后重试"});
     }
     let ver = client_app_version();
-    let resp = match zcode_api_headers(http().get("https://zcode.z.ai/api/v1/zcode-plan/billing/balance")
-        .query(&[("app_version", ver.as_str())])
-        .header("Authorization", format!("Bearer {}", token))
-        .header("X-Device-Mid", &mid), &ver)
-        .timeout(std::time::Duration::from_secs(30)).send() {
+    let resp = match zcode_api_headers(
+        http()
+            .get("https://zcode.z.ai/api/v1/zcode-plan/billing/balance")
+            .query(&[("app_version", ver.as_str())])
+            .header("Authorization", format!("Bearer {}", token))
+            .header("X-Device-Mid", &mid),
+        &ver,
+    )
+    .timeout(std::time::Duration::from_secs(30))
+    .send()
+    {
         Ok(r) => {
             let status = r.status();
             if !status.is_success() {
-                let retry_after = r.headers().get("retry-after").and_then(|v| v.to_str().ok())
+                let retry_after = r
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok())
                     .and_then(|v| v.trim().parse::<u64>().ok());
                 quota_status_error(status.as_u16(), retry_after, now)
             } else {
@@ -79,11 +176,15 @@ pub(crate) fn fetch_quota(key: String, force: Option<bool>) -> serde_json::Value
                             json!({"ok": true, "data": j, "fetched_at": now})
                         }
                     }
-                    Err(e) => json!({"ok": false, "code": "parse", "transient": true, "error": e.to_string(), "fetched_at": now}),
+                    Err(e) => {
+                        json!({"ok": false, "code": "parse", "transient": true, "error": e.to_string(), "fetched_at": now})
+                    }
                 }
             }
         }
-        Err(e) => json!({"ok": false, "code": "network", "transient": true, "error": e.to_string(), "fetched_at": now}),
+        Err(e) => {
+            json!({"ok": false, "code": "network", "transient": true, "error": e.to_string(), "fetched_at": now})
+        }
     };
     // 成功响应落额度历史（10 分钟节流、30 天保留），供燃尽率预测；失败响应不入库
     if resp.get("ok").and_then(|v| v.as_bool()) == Some(true) {
@@ -93,33 +194,50 @@ pub(crate) fn fetch_quota(key: String, force: Option<bool>) -> serde_json::Value
         }
     }
     let ok = resp.get("ok").and_then(|v| v.as_bool()) == Some(true);
-    QUOTA_CACHE.lock().unwrap().get_or_insert_with(Default::default).insert(key, (now, resp.clone()));
-    if ok { persist_quota_cache(); }
+    QUOTA_CACHE
+        .lock()
+        .unwrap()
+        .get_or_insert_with(Default::default)
+        .insert(key, (now, resp.clone()));
+    if ok {
+        persist_quota_cache();
+    }
     resp
 }
 
 /// 额度历史 + 燃尽率预测（纯本地文件，无网络）
 #[tauri::command(async)]
 pub(crate) fn quota_history(key: String) -> serde_json::Value {
-    if let Err(e) = safe_key(&key) { return denied(e); }
-    let samples = history::load_history_cached(&history::ensure_history_path(&app_data_dir(), &key));
+    if let Err(e) = safe_key(&key) {
+        return denied(e);
+    }
+    let samples =
+        history::load_history_cached(&history::ensure_history_path(&app_data_dir(), &key));
     let forecast = history::forecast(&samples);
     json!({"ok": true, "samples": samples.len(), "points": samples, "forecast": forecast})
 }
 
 pub(crate) fn load_quota_cache_once() {
     let mut g = QUOTA_CACHE.lock().unwrap();
-    if g.is_some() { return; }
+    if g.is_some() {
+        return;
+    }
     let mut map = std::collections::HashMap::new();
     if let Ok(v) = read_json(&quota_cache_path()) {
         let reverse = known_profile_key_map();
         if let Some(obj) = v.as_object() {
             for (k, e) in obj {
                 let raw = reverse.get(k).cloned().or_else(|| {
-                    if !is_opaque_key(k) && safe_key(k).is_ok() { Some(k.clone()) } else { None }
+                    if !is_opaque_key(k) && safe_key(k).is_ok() {
+                        Some(k.clone())
+                    } else {
+                        None
+                    }
                 });
                 let Some(raw) = raw else { continue };
-                if let (Some(ts), Some(resp)) = (e.get("ts").and_then(|x| x.as_i64()), e.get("resp")) {
+                if let (Some(ts), Some(resp)) =
+                    (e.get("ts").and_then(|x| x.as_i64()), e.get("resp"))
+                {
                     map.insert(raw, (ts, resp.clone()));
                 }
             }
@@ -131,13 +249,14 @@ pub(crate) fn load_quota_cache_once() {
 pub(crate) fn persist_quota_cache() {
     let map = QUOTA_CACHE.lock().unwrap().clone().unwrap_or_default();
     let mut obj = serde_json::Map::new();
-    for (k, (ts, resp)) in map { obj.insert(opaque_key(&k), json!({"ts": ts, "resp": resp})); }
+    for (k, (ts, resp)) in map {
+        obj.insert(opaque_key(&k), json!({"ts": ts, "resp": resp}));
+    }
     let _ = write_json(&quota_cache_path(), &Value::Object(obj));
 }
 
-pub(crate) static QUOTA_CACHE: Mutex<Option<std::collections::HashMap<String, (i64, Value)>>> = Mutex::new(None);
-
-
+pub(crate) static QUOTA_CACHE: Mutex<Option<std::collections::HashMap<String, (i64, Value)>>> =
+    Mutex::new(None);
 
 #[cfg(test)]
 mod tests {
@@ -169,9 +288,55 @@ mod tests {
         assert_eq!(s["code"], json!("server"));
         assert_eq!(s["transient"], json!(true));
         assert_eq!(s["error"], json!("额度接口返回错误"));
-        assert_eq!(quota_business_error(429, "slow", 5)["code"], json!("server"));
+        assert_eq!(
+            quota_business_error(429, "slow", 5)["code"],
+            json!("server")
+        );
         assert_eq!(quota_cache_ttl(true), 90);
         assert_eq!(quota_cache_ttl(false), 20);
     }
 
+    #[test]
+    fn quota_alerts_detect_expiry_and_low_balance() {
+        let now = 1_700_000_000;
+        let mk = |avail: f64, total: f64, exp: Option<i64>| {
+            json!({
+                "ok": true, "data": {"data": {"balances": [{
+                    "available_units": avail, "total_units": total,
+                    "expires_at": exp
+                }]}}
+            })
+        };
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "expiring".to_string(),
+            (now, mk(90.0, 100.0, Some((now + 3600) * 1000))),
+        );
+        map.insert(
+            "low".to_string(),
+            (now, mk(5.0, 100.0, Some(now + 86400 * 30))),
+        );
+        map.insert(
+            "healthy".to_string(),
+            (now, mk(90.0, 100.0, Some(now + 86400 * 30))),
+        );
+        map.insert("error".to_string(), (now, json!({"ok": false})));
+        let alerts = quota_alerts(&map, now, 10.0, 24);
+        assert_eq!(alerts.len(), 2);
+        assert_eq!(alerts[0]["key"], json!("expiring"));
+        assert_eq!(alerts[0]["reason"], json!("expiry"));
+        assert_eq!(alerts[1]["key"], json!("low"));
+        assert_eq!(alerts[1]["reason"], json!("low"));
+    }
+
+    #[test]
+    fn quota_alerts_ignore_zero_total_and_expired_windows() {
+        let now = 1_700_000_000;
+        let resp = json!({"ok": true, "data": {"data": {"balances": [{
+            "available_units": 0, "total_units": 0, "expires_at": now - 10
+        }]}}});
+        let mut map = std::collections::HashMap::new();
+        map.insert("zero".to_string(), (now, resp));
+        assert!(quota_alerts(&map, now, 10.0, 24).is_empty());
+    }
 }

@@ -41,10 +41,14 @@ pub(crate) fn migrate_privacy_keys() {
                     }
                 }
                 out.push_str(&serde_json::to_string(&v).unwrap_or_else(|_| line.to_string()));
-            } else { out.push_str(line); }
+            } else {
+                out.push_str(line);
+            }
             out.push('\n');
         }
-        if changed { let _ = write_bytes_atomic(&ap, out.as_bytes()); }
+        if changed {
+            let _ = write_bytes_atomic(&ap, out.as_bytes());
+        }
     }
     // 福利缓存：{"map": {key: value}}
     let bf = benefits_file();
@@ -54,11 +58,16 @@ pub(crate) fn migrate_privacy_keys() {
             let keys: Vec<String> = map.keys().cloned().collect();
             for k in keys {
                 if !is_opaque_key(&k) && safe_key(&k).is_ok() {
-                    if let Some(val) = map.remove(&k) { map.insert(opaque_key(&k), val); changed = true; }
+                    if let Some(val) = map.remove(&k) {
+                        map.insert(opaque_key(&k), val);
+                        changed = true;
+                    }
                 }
             }
         }
-        if changed { let _ = write_json(&bf, &v); }
+        if changed {
+            let _ = write_json(&bf, &v);
+        }
     }
     // 额度快照：顶层 {key: {ts,resp}}
     let qc = quota_cache_path();
@@ -68,10 +77,15 @@ pub(crate) fn migrate_privacy_keys() {
             let mut changed = false;
             for k in keys {
                 if !is_opaque_key(&k) && safe_key(&k).is_ok() {
-                    if let Some(val) = map.remove(&k) { map.insert(opaque_key(&k), val); changed = true; }
+                    if let Some(val) = map.remove(&k) {
+                        map.insert(opaque_key(&k), val);
+                        changed = true;
+                    }
                 }
             }
-            if changed { let _ = write_json(&qc, &v); }
+            if changed {
+                let _ = write_json(&qc, &v);
+            }
         }
     }
     // 额度历史：旧文件名 = 账号 key；改为 history::key_hash
@@ -79,10 +93,16 @@ pub(crate) fn migrate_privacy_keys() {
     if let Ok(rd) = std::fs::read_dir(&hd) {
         for e in rd.flatten() {
             let name = e.file_name().to_string_lossy().to_string();
-            let Some(stem) = name.strip_suffix(".jsonl") else { continue };
-            if is_hex16(stem) { continue; }
+            let Some(stem) = name.strip_suffix(".jsonl") else {
+                continue;
+            };
+            if is_hex16(stem) {
+                continue;
+            }
             let target = hd.join(format!("{}.jsonl", history::key_hash(stem)));
-            if !target.exists() { let _ = std::fs::rename(e.path(), target); }
+            if !target.exists() {
+                let _ = std::fs::rename(e.path(), target);
+            }
         }
     }
 }
@@ -95,58 +115,105 @@ pub(crate) fn audit_log(event: &str, key: Option<&str>, detail: serde_json::Valu
 
 // 账号标识只允许目录名用字符；阻断 ../、绝对路径等穿越（delete/switch/fetch 都是 key 拼路径）
 pub(crate) fn safe_key(key: &str) -> Result<(), String> {
-    if key == "__current__" { return Ok(()); }
+    if key == "__current__" {
+        return Ok(());
+    }
     let ok = !key.is_empty()
         && !key.starts_with('.')
-        && !key.contains('\\') && !key.contains('/') && !key.contains("..") && !key.contains(':')
-        && key.chars().all(|c| c.is_alphanumeric() || "-_.@".contains(c));
-    if ok { Ok(()) } else { Err("非法账号标识".into()) }
+        && !key.contains('\\')
+        && !key.contains('/')
+        && !key.contains("..")
+        && !key.contains(':')
+        && key
+            .chars()
+            .all(|c| c.is_alphanumeric() || "-_.@".contains(c));
+    if ok {
+        Ok(())
+    } else {
+        Err("非法账号标识".into())
+    }
 }
 
-pub(crate) fn denied(e: String) -> serde_json::Value { json!({"ok": false, "error": e}) }
+pub(crate) fn denied(e: String) -> serde_json::Value {
+    json!({"ok": false, "error": e})
+}
 
 // 账号目录名清洗：白名单字符外全部替换为下划线（capture / OAuth 建档 / 导入共用）。
 // 结果必须能通过 safe_key：连续点折叠、去掉首尾点、空值兜底、限长避免超长路径。
 pub(crate) fn sanitize_label(s: &str) -> String {
-    let mut out: String = s.trim().chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '@' { c } else { '_' })
+    let mut out: String = s
+        .trim()
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '@' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
-    while out.contains("..") { out = out.replace("..", "."); }
+    while out.contains("..") {
+        out = out.replace("..", ".");
+    }
     out = out.trim_matches('.').to_string();
-    if out.is_empty() { out = "account".into(); }
+    if out.is_empty() {
+        out = "account".into();
+    }
     let upper = out.to_ascii_uppercase();
     let reserved = matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || (upper.len() == 4 && (upper.starts_with("COM") || upper.starts_with("LPT"))
-            && upper.chars().nth(3).map(|c| c.is_ascii_digit()).unwrap_or(false));
-    if reserved { out = format!("account-{}", out); }
+        || (upper.len() == 4
+            && (upper.starts_with("COM") || upper.starts_with("LPT"))
+            && upper
+                .chars()
+                .nth(3)
+                .map(|c| c.is_ascii_digit())
+                .unwrap_or(false));
+    if reserved {
+        out = format!("account-{}", out);
+    }
     out.chars().take(64).collect()
 }
 
 pub(crate) fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    if let Some(p) = path.parent() { std::fs::create_dir_all(p).map_err(|e| e.to_string())?; }
-    let tmp = path.with_extension(format!("hub-tmp-{}-{}", std::process::id(), rand::random::<u32>()));
+    if let Some(p) = path.parent() {
+        std::fs::create_dir_all(p).map_err(|e| e.to_string())?;
+    }
+    let tmp = path.with_extension(format!(
+        "hub-tmp-{}-{}",
+        std::process::id(),
+        rand::random::<u32>()
+    ));
     std::fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
     match std::fs::rename(&tmp, path) {
         Ok(()) => Ok(()),
-        Err(e) => { let _ = std::fs::remove_file(&tmp); Err(e.to_string()) }
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e.to_string())
+        }
     }
 }
 
 pub(crate) fn home_v2() -> PathBuf {
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".zcode").join("v2")
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".zcode")
+        .join("v2")
 }
 
 // setting.json 的 dataBaseDir 若被用户改过，凭据等数据文件跟着走（setting.json 本身留在原处）
 pub(crate) fn v2_dir() -> PathBuf {
     let base = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let root = read_json(&home_v2().join("setting.json")).ok()
+    let root = read_json(&home_v2().join("setting.json"))
+        .ok()
         .and_then(|v| formats::data_base_dir(&v))
         .map(PathBuf::from)
         .unwrap_or(base);
     root.join(".zcode").join("v2")
 }
 
-pub(crate) fn cred_path() -> PathBuf { v2_dir().join(CRED_FILE) }
+pub(crate) fn cred_path() -> PathBuf {
+    v2_dir().join(CRED_FILE)
+}
 
 // 标准应用数据目录：%APPDATA%\zcode-hub（换机器 / 无 D 盘也正常）
 pub(crate) fn app_data_dir() -> PathBuf {
@@ -155,7 +222,9 @@ pub(crate) fn app_data_dir() -> PathBuf {
         .join("zcode-hub")
 }
 
-pub(crate) fn profiles_dir() -> PathBuf { app_data_dir().join("profiles") }
+pub(crate) fn profiles_dir() -> PathBuf {
+    app_data_dir().join("profiles")
+}
 
 // 旧版本把数据硬编码在 D:\zcode-hub；首次启动若新位置为空则整体迁入（不删旧文件）
 pub(crate) fn migrate_legacy_data() {
@@ -168,7 +237,9 @@ pub(crate) fn migrate_legacy_data() {
     if !app_data_dir().join("snapkey").exists() && old_snapkey.exists() {
         let _ = std::fs::copy(&old_snapkey, app_data_dir().join("snapkey"));
     }
-    let empty = std::fs::read_dir(&new_profiles).map(|rd| rd.count() == 0).unwrap_or(true);
+    let empty = std::fs::read_dir(&new_profiles)
+        .map(|rd| rd.count() == 0)
+        .unwrap_or(true);
     if empty && old_profiles.exists() {
         if let Ok(rd) = std::fs::read_dir(&old_profiles) {
             for e in rd.flatten() {
@@ -191,13 +262,17 @@ pub(crate) fn cleanup_transient_files() {
     if let Ok(rd) = std::fs::read_dir(&app_data) {
         for e in rd.flatten() {
             let n = e.file_name().to_string_lossy().to_string();
-            if n.contains(".hub-tmp") { let _ = std::fs::remove_file(e.path()); }
+            if n.contains(".hub-tmp") {
+                let _ = std::fs::remove_file(e.path());
+            }
         }
     }
     let v2 = v2_dir();
     // 只有当 live 凭据仍可解析时才丢弃回滚副本；恢复失败/重启后 live 坏了，它是最后的救援。
     let live_ok = cred_path().exists() && read_json(&cred_path()).is_ok();
-    if live_ok { let _ = std::fs::remove_file(v2.join("credentials.json.hub-backup")); }
+    if live_ok {
+        let _ = std::fs::remove_file(v2.join("credentials.json.hub-backup"));
+    }
     if let Ok(rd) = std::fs::read_dir(&v2) {
         for e in rd.flatten() {
             let n = e.file_name().to_string_lossy().to_string();
@@ -209,11 +284,15 @@ pub(crate) fn cleanup_transient_files() {
     // 账号目录里被强杀留下的半截快照/元数据临时文件
     if let Ok(rd) = std::fs::read_dir(profiles_dir()) {
         for e in rd.flatten() {
-            if !e.path().is_dir() { continue; }
+            if !e.path().is_dir() {
+                continue;
+            }
             if let Ok(files) = std::fs::read_dir(e.path()) {
                 for f in files.flatten() {
                     let n = f.file_name().to_string_lossy().to_string();
-                    if n.contains(".hub-tmp") { let _ = std::fs::remove_file(f.path()); }
+                    if n.contains(".hub-tmp") {
+                        let _ = std::fs::remove_file(f.path());
+                    }
                 }
             }
         }
@@ -221,7 +300,9 @@ pub(crate) fn cleanup_transient_files() {
     // 额度历史目录的半截重写文件
     if let Ok(rd) = std::fs::read_dir(app_data.join("quota-history")) {
         for e in rd.flatten() {
-            if e.file_name().to_string_lossy().contains(".hub-tmp") { let _ = std::fs::remove_file(e.path()); }
+            if e.file_name().to_string_lossy().contains(".hub-tmp") {
+                let _ = std::fs::remove_file(e.path());
+            }
         }
     }
     // 回收站超过 30 天自动清理，避免无限增长
@@ -230,7 +311,11 @@ pub(crate) fn cleanup_transient_files() {
         for e in rd.flatten() {
             if let Ok(meta) = e.metadata() {
                 if meta.modified().map(|m| m < cutoff).unwrap_or(false) {
-                    let _ = if meta.is_dir() { std::fs::remove_dir_all(e.path()) } else { std::fs::remove_file(e.path()) };
+                    let _ = if meta.is_dir() {
+                        std::fs::remove_dir_all(e.path())
+                    } else {
+                        std::fs::remove_file(e.path())
+                    };
                 }
             }
         }
@@ -242,19 +327,30 @@ pub(crate) fn copy_dir_all(src: &PathBuf, dst: PathBuf) -> std::io::Result<()> {
     for e in std::fs::read_dir(src)? {
         let e = e?;
         let t = dst.join(e.file_name());
-        if e.path().is_dir() { copy_dir_all(&e.path(), t)?; }
-        else { std::fs::copy(e.path(), t)?; }
+        if e.path().is_dir() {
+            copy_dir_all(&e.path(), t)?;
+        } else {
+            std::fs::copy(e.path(), t)?;
+        }
     }
     Ok(())
 }
 
-pub(crate) fn trash_dir() -> PathBuf { app_data_dir().join("trash") }
+pub(crate) fn trash_dir() -> PathBuf {
+    app_data_dir().join("trash")
+}
 
-pub(crate) fn quota_cache_path() -> PathBuf { app_data_dir().join("quota-cache.json") }
+pub(crate) fn quota_cache_path() -> PathBuf {
+    app_data_dir().join("quota-cache.json")
+}
 
-pub(crate) fn benefits_file() -> PathBuf { app_data_dir().join("benefits.json") }
+pub(crate) fn benefits_file() -> PathBuf {
+    app_data_dir().join("benefits.json")
+}
 
-pub(crate) fn config_path() -> PathBuf { app_data_dir().join("hub-config.json") }
+pub(crate) fn config_path() -> PathBuf {
+    app_data_dir().join("hub-config.json")
+}
 
 #[cfg(test)]
 mod tests {
@@ -284,7 +380,11 @@ mod tests {
         assert_eq!(sanitize_label("CON"), "account-CON");
         assert_eq!(sanitize_label("COM1"), "account-COM1");
         for s in ["../..", "...", "", ".hidden", "a/b", "a:b", "a b"] {
-            assert!(safe_key(&sanitize_label(s)).is_ok(), "sanitize 后仍非法: {:?}", s);
+            assert!(
+                safe_key(&sanitize_label(s)).is_ok(),
+                "sanitize 后仍非法: {:?}",
+                s
+            );
         }
     }
 
@@ -321,5 +421,4 @@ mod tests {
         assert!(!dir.join("t.hub-tmp").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
-
 }
