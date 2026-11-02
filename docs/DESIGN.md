@@ -8,18 +8,21 @@
 ┌────────────────────────── ZCode Hub (Tauri 2) ──────────────────────────┐
 │  ui/  index.html + style.css + app.js      ← 零依赖前端，CSP: script 'self' │
 │        │  IPC (invoke)                                                       │
-│  src-tauri/src/main.rs                     ← 命令、状态、业务流程             │
-│   ├─ 状态: get_state / capture / switch / delete                            │
-│   ├─ OAuth: init → 浏览器登录 → poll → 业务token交换 → 档案规范化            │
-│   ├─ 额度: billing/balance（成功 90s / 失败 20s 负缓存）                      │
-│   ├─ 福利: marketing/touch（横幅同源，preview 兜底）                          │
-│   ├─ 设备身份: 每账号独立 deviceMid + arms_uid                              │
+│  src-tauri/src/main.rs                    ← 入口 / 37 commands 注册      │
+│  src-tauri/src/identity.rs                ← 身份指纹 / 切换 / 设备隔离   │
+│  src-tauri/src/profiles.rs                ← 账号库 CRUD / 回收站 / 备份  │
+│  src-tauri/src/quota.rs                   ← 额度 / 缓存 / 燃尽率历史     │
+│  src-tauri/src/benefits.rs                ← 福利检测 / 批量调度 / 领取   │
+│  src-tauri/src/{client,system}.rs         ← 客户端 / 更新 / Shell / 自启 │
+│  src-tauri/src/{window,settings}.rs       ← 窗口几何 / 设置              │
+│  src-tauri/src/{oauth,app}.rs             ← OAuth / 托盘 / 通知 / 状态   │
+│  src-tauri/src/{crypto,util}.rs           ← 快照加密 / 原子写 / 隐私 key │
 │   └─ 守卫: safe_key 路径穿越校验 / 原子写入 / 泄密扫描                        │
 │  src-tauri/src/formats.rs                  ← 客户端文件格式纯逻辑（注入式）   │
 │   └─ credentials / setting / telemetry-state / arms store + 契约测试        │
 │  src-tauri/src/claim.rs                    ← 事件上报 / 营销活动 / 验证码 / 领取 │
 │  src-tauri/src/platform.rs                 ← 平台抽象：Windows 实现 + 占位    │
-│   └─ DPAPI / 进程 / Shell / 自启 / arms 目录（main.rs 零平台符号）
+│   └─ DPAPI / 进程 / Shell / 自启 / arms 目录（业务模块零平台符号）
 │  src-tauri/src/{audit,history}.rs          ← 本地审计日志 / 额度历史与燃尽率  │
 └──────────────────────────────────────────────────────────────────────────┘
           │ 读/写（仅切换时）                          │ 只读探测
@@ -74,7 +77,7 @@
 
 ## 测试策略
 
-- **Rust 单测**（`main.rs` / `formats.rs` / `claim.rs` / `history.rs` / `audit.rs` 的 `mod tests`）：
+- **Rust 单测**（各模块底部的 `mod tests`，共 58 个）：
   加密往返与布局守护、畸形 IV 拒绝、路径穿越、JWT 过期、marketing/preview 解析、原子写入、
   安全模式合并、热切换验证回路、历史追加/裁剪、审计轮转、验证码回环、KDF —— 纯函数优先，不碰真实凭据
 - **格式契约测试**（`src-tauri/tests/fixtures/*.json` + `formats::tests`）：脱敏构造的客户端

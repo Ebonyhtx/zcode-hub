@@ -59,7 +59,7 @@ git config core.hooksPath .githooks
 ## 提交与测试
 
 - 提交信息用英文 conventional 风格（`feat:` / `fix:` / `chore:` / `docs:`）
-- 涉及加密 / 路径处理 / 解析逻辑的改动请附单元测试（参考 `src/main.rs` 底部 `mod tests`）
+- 涉及加密 / 路径处理 / 解析逻辑的改动请附单元测试（各模块底部 `mod tests`，参考 `crypto.rs` / `quota.rs`）
 - `cargo test` 必须全绿；UI 改动请同时 `node --check ui/app.js`
 - 改动 UI 文案时记得同步 `ui/app.js` 里 `I18N` 的中英两份字典
 

@@ -8,7 +8,16 @@ Tauri 2 桌面工具：ZCode 多账号切换 + 额度展示 + 营销福利检测
 
 ## 代码布局
 
-- `src-tauri/src/main.rs` — 命令层、状态机与业务流程；命令通过 `tauri::generate_handler!` 注册
+- `src-tauri/src/main.rs` — 入口与 `tauri::generate_handler!` 命令注册（不再承载业务逻辑）
+- `src-tauri/src/` 业务模块：
+  - `identity.rs` — 账号指纹 / 切换（热/冷/安全模式）/ 设备身份隔离
+  - `profiles.rs` — 账号库 CRUD / 回收站 / 口令备份导入导出
+  - `quota.rs` — 额度拉取、缓存与历史
+  - `benefits.rs` — 福利检测、批量调度、领取流程
+  - `settings.rs` / `window.rs` — 设置、窗口几何与窗口控制
+  - `client.rs` / `system.rs` — 客户端探测/版本、更新、Shell、自启
+  - `oauth.rs` / `app.rs` — OAuth 登录、托盘、通知、首屏状态
+  - `crypto.rs` / `util.rs` — DPAPI 快照、`enc:v1`、路径与隐私 key
 - `src-tauri/src/{formats,claim,platform,audit,history}.rs` — 客户端格式 / 领取链路 / 平台抽象 / 审计 / 额度历史
 - `ui/` — 前端三件套（index.html / style.css / app.js），零依赖，CSP `script-src 'self'`（禁止内联事件，用 `data-action` 事件委托）
 - `scripts/secret-scan.sh` — 泄密守卫（三层：钩子/CI/发布；含 commit message 扫描）
