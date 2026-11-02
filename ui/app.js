@@ -15,6 +15,8 @@ var I18N = {
     exp_soon: "⏰ {h} 小时后到期", exp_lt1h: "⏰ 不到 1 小时后到期", exptag_tip: "有额度将在 24 小时内到期",
     burn: " · ⏳ 预计还可 ~{d} 天", burn_lt1: " · ⏳ 预计不足 1 天",
     plan_pending: "⏳ {t} 生效", plan_active_syncing: "已生效 · 额度同步中", plan_daily: " /天",
+    claim_wait: "请在浏览器中完成验证码，通过后自动领取…", claim_ok: "🎉 领取成功：{p}（{t} 生效）",
+    claim_fail: "领取失败", claim_fail_msg: "领取失败：{e}",
     week_plan: "周末福利", base_plan: "基础套餐", other_plan: "其他",
     add_title: "添加账号", add_sub: "选择账号类型，浏览器完成官方登录后自动存入账号库。",
     zai_name: "Z.AI 账号", zai_desc: "chat.z.ai · Start Plan / Coding Plan",
@@ -41,6 +43,8 @@ var I18N = {
     t_check_done0: "检测完成：{ok}/{all} 个账号正常，均无待领福利",
     t_check_done: "检测完成：{w}/{all} 个账号有 🎁{n} 项福利待领（打开 ZCode 客户端领取）",
     t_check_fail: "检测失败", t_refresh_fail: "刷新失败: {e}",
+    ben_transient: "🔎 暂时无法检测，稍后自动重试", t_one_transient: "暂时无法检测，稍后自动重试",
+    t_check_partial: "检测完成：{ok}/{all} 个账号正常，{f} 个暂时无法检测（稍后自动重试）",
     t_one_has: "🎁 该账号有 {n} 项待领福利", t_one_none: "该账号暂无待领福利", t_one_fail: "检测失败",
     t_switched_hot: "已热切换（客户端未重启）", t_switched_re: "已切换并重启 ZCode", t_switched_nore: "凭据已切换，ZCode 未自动重启，请手动打开",
     t_switch_fail: "切换失败", t_close_fail: "无法关闭 ZCode（可能仍在托盘运行），请手动退出后重试",
@@ -63,6 +67,9 @@ var I18N = {
     exp_soon: "⏰ expires in {h}h", exp_lt1h: "⏰ expires in <1h", exptag_tip: "Some quota expires within 24h",
     burn: " · ⏳ ~{d}d left at this pace", burn_lt1: " · ⏳ under a day left",
     plan_pending: "⏳ starts {t}", plan_active_syncing: "active · syncing quota", plan_daily: "/day",
+    claim_wait: "Complete the captcha in your browser — claiming continues automatically…",
+    claim_ok: "🎉 Claimed: {p} (starts {t})",
+    claim_fail: "Claim failed", claim_fail_msg: "Claim failed: {e}",
     week_plan: "Weekend bonus", base_plan: "Base plan", other_plan: "Other",
     add_title: "Add account", add_sub: "Pick a provider, finish official login in browser, saved automatically.",
     zai_name: "Z.AI account", zai_desc: "chat.z.ai · Start Plan / Coding Plan",
@@ -89,6 +96,8 @@ var I18N = {
     t_check_done0: "Check done: {ok}/{all} accounts fine, nothing to claim",
     t_check_done: "Check done: {w}/{all} accounts have 🎁{n} claimable (claim in ZCode client)",
     t_check_fail: "Check failed", t_refresh_fail: "Refresh failed: {e}",
+    ben_transient: "🔎 Check temporarily unavailable, will retry", t_one_transient: "Check temporarily unavailable, will retry",
+    t_check_partial: "Check done: {ok}/{all} fine, {f} temporarily unavailable (auto-retry)",
     t_one_has: "🎁 This account has {n} claimable", t_one_none: "Nothing to claim for this account", t_one_fail: "Check failed",
     t_switched_hot: "Hot-switched (client not restarted)", t_switched_re: "Switched, ZCode restarted", t_switched_nore: "Credentials switched — start ZCode manually",
     t_switch_fail: "Switch failed", t_close_fail: "Cannot close ZCode (may be in tray). Quit it manually and retry",
@@ -281,14 +290,17 @@ function renderBuckets(balances, plans, burnMap) {
   }).join("");
 }
 var prevCounts = {};
-function renderBenefitState(b) {
+function renderBenefitState(b, key) {
   if (!b) return '<div class="bstate unk">' + esc(t("not_checked")) + '</div>';
   var when = b.checked_at ? ' <span class="whn num">· '+fmtT2(b.checked_at)+'</span>' : "";
-  if (b.ok === false) return '<div class="bstate bad">'+esc(t("ben_fail", {e: b.error || "?"}))+'</div>';
+  if (b.ok === false) {
+    if (b.transient) return '<div class="bstate unk">'+esc(t("ben_transient"))+when+'</div>';
+    return '<div class="bstate bad">'+esc(t("ben_fail", {e: b.error || "?"}))+'</div>';
+  }
   if (!b.count) return '<div class="bstate none">'+esc(t("ben_none"))+when+'</div>';
   var rows = '<div class="campaigns">' + (b.campaigns || []).map(function(c) {
     var detail = c.detail ? ' <span>(' + esc(c.detail) + ')</span>' : "";
-    return '<div class="camp"><div class="camp-info"><b>'+esc(c.title)+'</b><span>'+esc(c.grant)+' Token'+detail+'</span></div><button class="camp-btn" data-action="claim">'+esc(t("claim"))+'</button></div>';
+    return '<div class="camp"><div class="camp-info"><b>'+esc(c.title)+'</b><span>'+esc(c.grant)+' Token'+detail+'</span></div><button class="camp-btn" data-action="claim" data-key="'+esc(key||"")+'" data-plan="'+esc(c.plan_id||"")+'" data-plan-name="'+esc(c.title)+'">'+esc(t("claim"))+'</button></div>';
   }).join("") + '</div>';
   return '<div class="bstate has">'+esc(t("ben_has", {n: b.count}))+when+'</div>' + rows;
 }
@@ -326,7 +338,7 @@ function cardHtml(p, quotaData, benefitData, historyData) {
   }
   var buckets = quotaData && quotaData.ok ? renderBuckets(balances, plans, burnMap)
     : '<div style="font-size:11.5px;color:var(--bad);padding:2px 0">'+esc(quotaData && quotaData.error || t("quota_fail"))+'</div>';
-  var benefit = renderBenefitState(benefitData);
+  var benefit = renderBenefitState(benefitData, p.key);
   var foot = p.is_current
     ? '<span class="curmark">'+esc(t("use_now"))+'</span>'
     : '<button class="switch-btn" data-action="switch" data-key="'+esc(p.key)+'">'+esc(t("switch_to"))+'</button>';
@@ -400,9 +412,10 @@ function doCheck() {
   btn.disabled = true; btn.textContent = t("checking_dots");
   invoke("check_all_benefits").then(function(r) {
     btn.disabled = false; btn.textContent = t("check_all");
-    if (!r.ok) { pushToast(t("t_check_fail"), "bad"); return; }
-    if (r.total_campaigns === 0) pushToast(t("t_check_done0", {ok: r.checked_ok, all: r.accounts}), "ok");
-    else pushToast(t("t_check_done", {w: r.accounts_with_benefits, all: r.accounts, n: r.total_campaigns}), "warn");
+    if (r.total_campaigns === 0) {
+      if (r.failed > 0) pushToast(t("t_check_partial", {ok: r.checked_ok, all: r.accounts, f: r.failed}), "warn");
+      else pushToast(t("t_check_done0", {ok: r.checked_ok, all: r.accounts}), "ok");
+    } else pushToast(t("t_check_done", {w: r.accounts_with_benefits, all: r.accounts, n: r.total_campaigns}), "warn");
     refresh();
   }).catch(function(e) {
     btn.disabled = false; btn.textContent = t("check_all");
@@ -416,6 +429,7 @@ function checkOne(key, btn) {
   invoke("check_benefits", { key: key }).then(function(r) {
     if (r.ok && r.count > 0) pushToast(t("t_one_has", {n: r.count}), "warn");
     else if (r.ok) pushToast(t("t_one_none"), "ok");
+    else if (r.transient) pushToast(t("t_one_transient"), "warn");
     else pushToast(t("t_one_fail"), "bad");
   }).catch(function(e) { pushToast(String(e), "bad"); })
   .finally(function() { btn.disabled = false; btn.innerHTML = old; refresh(); });
@@ -436,6 +450,36 @@ function doSwitch(key) {
 function doDelete(key) { if (!confirm(t("c_del"))) return; invoke("delete_profile", { key: key }).then(function() { pushToast(t("t_deleted"), "ok"); refresh(); }); }
 function doKill() { if (!confirm(t("c_kill"))) return; invoke("kill_zcode_client").then(function() { refresh(); }); }
 function doOpenClient() { invoke("open_zcode_client"); }
+
+/* 领取：Hub 内完成事件上报 → 打开浏览器验证码页（用户手动完成）→ 自动提交 claim。
+   不做自动/定时领取（边界见 AGENTS.md）。 */
+function doClaim(key, planId, planName) {
+  if (!planId) { doOpenClient(); return; } // 老数据无 plan_id 时回退到打开客户端手动领取
+  invoke("claim_plan", { key: key, planId: planId, planName: planName || "" }).then(function(r) {
+    if (!r || r.ok === false) { pushToast((r && r.error) || t("claim_fail"), "bad"); return; }
+    pushToast(t("claim_wait"), "warn");
+    pollClaimState();
+  }).catch(function(e) { pushToast(String(e), "bad"); });
+}
+var claimPollTimer = null;
+function pollClaimState() {
+  if (claimPollTimer) clearInterval(claimPollTimer);
+  var startedAt = Date.now();
+  claimPollTimer = setInterval(function() {
+    invoke("claim_state").then(function(s) {
+      if (!s) return;
+      if (s.status === "success") {
+        clearInterval(claimPollTimer); claimPollTimer = null;
+        pushToast(t("claim_ok", { p: s.planName || "?", t: s.effectiveAt ? fmtT2(s.effectiveAt) : "—" }), "ok");
+        refresh();
+      } else if (s.status === "failed") {
+        clearInterval(claimPollTimer); claimPollTimer = null;
+        pushToast(t("claim_fail_msg", { e: s.message || "?" }), "bad");
+      }
+    }).catch(function() {});
+    if (Date.now() - startedAt > 170000) { clearInterval(claimPollTimer); claimPollTimer = null; }
+  }, 2000);
+}
 
 /* ---------------- oauth modal ---------------- */
 var oauthTimer = null;
@@ -596,7 +640,7 @@ document.addEventListener("click", function(e) {
     case "switch": doSwitch(key); break;
     case "del": doDelete(key); break;
     case "checkone": checkOne(key, el); break;
-    case "claim": doOpenClient(); break;
+    case "claim": doClaim(el.getAttribute("data-key"), el.getAttribute("data-plan"), el.getAttribute("data-plan-name")); break;
   }
 });
 document.addEventListener("change", function(e) {
