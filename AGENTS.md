@@ -34,7 +34,7 @@ Tauri 2 桌面工具：ZCode 多账号切换 + 额度展示 + 营销福利检测
 5. **CSP**：前端禁止内联事件与内联脚本；交互一律 `data-action` 委托（`ui/app.js` 里的 delegation）
 6. **边界**（2026-11-02 调整）：允许①以用户本人账号上报 `app_launch`/`app_daily_active` 活动事件（与客户端启动行为一致，用于检测解锁）；②人工完成阿里云验证码后一键领取。**仍禁止**：自动/定时领取、验证码绕过自动化、批量刷取、遥测造假——见 `docs/DESIGN.md` §4
 7. **身份与回滚**：账号身份用 token 明文指纹判定，禁止用展示名匹配；任何写 live 凭据的路径必须先备份、失败回滚；`snapkey` 解密失败必须硬失败，绝不重建覆盖
-8. **格式化与供应链**：提交前 `cargo fmt`（CI 跑 `--check`）；依赖策略在 `src-tauri/deny.toml`，CI 跑 cargo-deny
+8. **格式化与供应链**：提交前 `cargo fmt`（CI 跑 `--check`）；依赖策略在仓库根目录 `deny.toml`，CI 跑 cargo-deny
 
 ## 常用命令
 
