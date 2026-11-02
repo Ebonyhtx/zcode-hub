@@ -21,6 +21,9 @@ VALUE_PATTERNS=(
   'ZHB1:[A-Za-z0-9+/=]{40,}'
   '[u]ntrusted comment: minisign'  # 字符类防自匹配
   '-----BEGIN [A-Z ]*PRIVATE KEY-----'
+  # 文档/注释里的明文密码：密码/password/secret 后跟冒号或等号 + 引号/反引号包住的 8+ 位字面量。
+  # 只匹配“标记 + 分隔符 + 引号值”的形态，正文里的“密码至少 6 位”之类不会命中。
+  '(^|[^A-Za-z0-9_])(密码|口令|[Pp]assword|[Pp]asswd|[Ss]ecret)[[:space:]]*[:：=]?[[:space:]]*[`"][A-Za-z0-9!@#$%^&*_+=.,-]{8,}[`"]'
 )
 # 禁止入库的文件路径（本地数据 / 密钥 / 打包产物）
 PATH_PATTERNS=(
@@ -31,9 +34,10 @@ PATH_PATTERNS=(
 
 # 值特征扫描：stdin=待扫文本，stdout=命中行（无命中则空）
 scan_content() {
-  local p hits
+  local p hits data
+  data=$(cat)  # stdin 只能读一次：每条规则的 grep 会消费完管道
   for p in "${VALUE_PATTERNS[@]}"; do
-    hits=$(grep -nE "$p" 2>/dev/null | head -3 | cut -c1-140)
+    hits=$(printf '%s\n' "$data" | grep -nE "$p" 2>/dev/null | head -3 | cut -c1-140)
     [ -n "$hits" ] && printf '%s\n' "$hits"
   done
   return 0
@@ -107,6 +111,26 @@ case "$MODE" in
       echo "  ✓ 干净文件正确放行"
     else
       echo "  ✗ 扫描器误报"; cd /; rm -rf "$TMP"; exit 1
+    fi
+    # 明文密码（文档形态）必须拦截
+    PWFIX="Demo-""Pass-""987654321"   # 运行时拼接，源码不构成完整特征
+    printf 'login: demo
+密码 `%s`
+' "$PWFIX" > pw.txt
+    git add pw.txt
+    if bash "$SELF" --staged >/dev/null 2>&1; then
+      echo "  ✗ 扫描器漏报（未拦截文档中的明文密码）"; cd /; rm -rf "$TMP"; exit 1
+    else
+      echo "  ✓ 文档明文密码被正确拦截"
+    fi
+    # 说明性文字不得误报
+    git rm --cached pw.txt -q
+    echo '口令至少 6 位，且密码与令牌不会出现在这里' > pwok.txt
+    git add pwok.txt
+    if bash "$SELF" --staged >/dev/null 2>&1; then
+      echo "  ✓ 说明性文字正确放行"
+    else
+      echo "  ✗ 扫描器误报（说明性文字被拦截）"; cd /; rm -rf "$TMP"; exit 1
     fi
     cd /
     rm -rf "$TMP"
