@@ -14,7 +14,7 @@ var I18N = {
     client_not_found: "未检测到 ZCode 客户端。请安装客户端，或在设置中指定安装路径。",
     t_save_fail: "保存失败：{e}", err_generic: "操作失败：{e}", err_process: "无法确认或关闭 ZCode 进程", err_snapshot: "账号存档读取失败", err_path: "客户端路径无效", err_password: "口令不正确或备份损坏", delete_body: "删除「{name}」？存档、额度历史和福利记录会一并移除，可在提示中撤销。", kill_confirm: "关闭 ZCode 客户端？正在运行的任务会中断。",
     t_closed: "ZCode 已关闭", t_restored: "已恢复「{x}」", import_fail: "导入失败：{e}",
-    sort: "排序", sort_current: "当前优先", sort_claimable: "待领福利", sort_expiry: "即将到期", sort_manual: "手动顺序",
+    sort: "排序", sort_current: "当前优先", sort_claimable: "待领福利", sort_expiry: "即将到期", sort_manual: "手动顺序", sort_manual_hint: "用卡片右上角 ↑↓ 调整", move_up: "上移", move_down: "下移",
     expand_all: "全部展开", fold_all: "全部收起",
     no_profile_title: "还没有账号", no_profile_body: "先安装并登录 ZCode 客户端，然后点「添加账号」；如果已经登录，点「保存当前登录」。",
     install_zcode: "打开 ZCode 官网", recheck: "重新检测",
@@ -44,7 +44,7 @@ var I18N = {
     oauth_timeout: "登录等待超时，请重试。", oauth_countdown: "剩余 {t}", reopen: "重新打开登录页", copy_link: "复制链接", copied: "链接已复制", copy_fail: "复制失败，请手动打开登录页",
     retry_signin: "重新登录", cancel: "取消",
     cfg_title: "设置 / 关于", about: "关于", about_line: " · 非官方多账号管理工具", check_upd: "检查更新", repo: "GitHub 仓库",
-    zcode_sec: "ZCode", client_path: "客户端路径", path_ph: "例：C:\\Program Files\\ZCode\\ZCode.exe（留空自动探测）", browse: "选择文件", save: "保存",
+    zcode_sec: "ZCode", client_path: "客户端路径", path_ph: "C:\\Program Files\\ZCode\\ZCode.exe", path_hint: "留空 = 自动探测；也可以点右侧文件夹图标选择 ZCode.exe", browse: "选择文件", save: "保存",
     datadir: "数据目录", open_hub_data: "打开 Hub 数据", open_zdata: "打开 ZCode 数据",
     sys_sec: "系统", autostart: "开机自启", autostart_hint: "写入启动文件夹快捷方式", start_min: "启动时最小化", start_min_hint: "启动后直接驻留托盘",
     close_action: "关闭窗口时", close_tray: "最小化到托盘", close_quit: "退出程序",
@@ -60,7 +60,7 @@ var I18N = {
     confirm_ok: "确认",
     notice_offline: "网络不可用，无法刷新账号状态。", notice_process: "无法确认 ZCode 进程状态：{e}", notice_claim: "正在领取「{p}」，其他账号暂时锁定。", dismiss: "关闭提示", details: "详情",
     settings: "设置", theme: "切换主题", minimize: "最小化", maximize: "最大化", close_window: "关闭窗口",
-    t_saved: "已保存：{x}", t_deleted: "账号已删除", t_undo: "撤销", t_settings_saved: "设置已保存", t_notify_on: "已开启系统通知", t_notify_off: "已关闭系统通知",
+    t_saved: "已保存：{x}", t_quota_refreshed: "额度已刷新（{n} 个账号）", t_quota_refreshed_partial: "额度已刷新：{n} 个成功，{f} 个失败", t_deleted: "账号已删除", t_undo: "撤销", t_settings_saved: "设置已保存", t_notify_on: "已开启系统通知", t_notify_off: "已关闭系统通知",
     t_autostart_on: "已开启开机自启", t_autostart_off: "已关闭开机自启", t_autostart_fail: "设置失败：{e}", t_path_saved: "客户端路径已保存（留空 = 自动探测）",
     t_refresh_fail: "刷新失败：{e}", t_check_done0: "检测完成：{ok}/{all} 个账号正常，均无待领福利", t_check_done: "检测完成：{w}/{all} 个账号有 {n} 项福利待领",
     t_check_partial: "检测完成：{ok}/{all} 个正常，{f} 个暂时无法检测", t_one_has: "该账号有 {n} 项待领福利", t_one_none: "该账号暂无待领福利", t_one_transient: "暂时无法检测，稍后自动重试",
@@ -79,7 +79,7 @@ var I18N = {
     client_not_found: "ZCode client not found. Install it, or set its path in Settings.",
     t_save_fail: "Save failed: {e}", err_generic: "Operation failed — please retry. Check the details in Chinese if needed.", err_process: "Cannot confirm or close the ZCode process", err_snapshot: "Failed to read the account snapshot", err_path: "Invalid client path", err_password: "Wrong password or corrupt backup", delete_body: "Delete \"{name}\"? Its snapshot, quota history and benefit records will be removed; you can undo from the toast.", kill_confirm: "Close ZCode? Running tasks will be interrupted.",
     t_closed: "ZCode closed", t_restored: "Restored \"{x}\"", import_fail: "Import failed: {e}",
-    sort: "Sort", sort_current: "Current first", sort_claimable: "Claimable", sort_expiry: "Expiring soon", sort_manual: "Manual order",
+    sort: "Sort", sort_current: "Current first", sort_claimable: "Claimable", sort_expiry: "Expiring soon", sort_manual: "Manual order", sort_manual_hint: "Use ↑↓ on cards to reorder", move_up: "Move up", move_down: "Move down",
     expand_all: "Expand all", fold_all: "Collapse all",
     no_profile_title: "No accounts yet", no_profile_body: "Install and sign in to ZCode, then choose \"Add account\". If you're already signed in, use \"Save current login\".",
     install_zcode: "Open ZCode website", recheck: "Re-check",
@@ -109,7 +109,7 @@ var I18N = {
     oauth_timeout: "Sign-in timed out. Please retry.", oauth_countdown: "{t} left", reopen: "Reopen login page", copy_link: "Copy link", copied: "Link copied", copy_fail: "Copy failed — open the login page manually",
     retry_signin: "Try again", cancel: "Cancel",
     cfg_title: "Settings / About", about: "About", about_line: " · unofficial multi-account manager", check_upd: "Check updates", repo: "GitHub repo",
-    zcode_sec: "ZCode", client_path: "Client path", path_ph: "e.g. C:\\Program Files\\ZCode\\ZCode.exe (empty = auto-detect)", browse: "Choose file", save: "Save",
+    zcode_sec: "ZCode", client_path: "Client path", path_ph: "C:\\Program Files\\ZCode\\ZCode.exe", path_hint: "Empty = auto-detect; or use the folder icon to choose ZCode.exe", browse: "Choose file", save: "Save",
     datadir: "Data dirs", open_hub_data: "Hub data", open_zdata: "ZCode data",
     sys_sec: "System", autostart: "Launch at startup", autostart_hint: "Startup-folder shortcut", start_min: "Start minimized", start_min_hint: "Stay in the tray after launch",
     close_action: "When closing", close_tray: "Minimize to tray", close_quit: "Quit app",
@@ -125,7 +125,7 @@ var I18N = {
     confirm_ok: "Confirm",
     notice_offline: "Network unavailable — account state cannot be refreshed.", notice_process: "Cannot confirm ZCode process state: {e}", notice_claim: "Claiming \"{p}\" — other accounts are locked.", dismiss: "Dismiss", details: "Details",
     settings: "Settings", theme: "Toggle theme", minimize: "Minimize", maximize: "Maximize", close_window: "Close window",
-    t_saved: "Saved: {x}", t_deleted: "Account deleted", t_undo: "Undo", t_settings_saved: "Settings saved", t_notify_on: "Notifications on", t_notify_off: "Notifications off",
+    t_saved: "Saved: {x}", t_quota_refreshed: "Quota refreshed ({n} accounts)", t_quota_refreshed_partial: "Quota refreshed: {n} ok, {f} failed", t_deleted: "Account deleted", t_undo: "Undo", t_settings_saved: "Settings saved", t_notify_on: "Notifications on", t_notify_off: "Notifications off",
     t_autostart_on: "Autostart enabled", t_autostart_off: "Autostart disabled", t_autostart_fail: "Failed: {e}", t_path_saved: "Client path saved (empty = auto-detect)",
     t_refresh_fail: "Refresh failed: {e}", t_check_done0: "Check done: {ok}/{all} accounts fine, nothing to claim", t_check_done: "Check done: {w}/{all} accounts have {n} claimable",
     t_check_partial: "Check done: {ok}/{all} fine, {f} temporarily unavailable", t_one_has: "{n} claimable for this account", t_one_none: "Nothing to claim for this account", t_one_transient: "Temporarily unavailable — will retry",
@@ -203,9 +203,9 @@ function fmtQText(n) { var p = fmtParts(n); return p.v + p.u; }
 
 /* ---------------- state ---------------- */
 var S = {
-  st: null, quota: {}, history: {}, quotaSeq: {}, folded: loadFold(), sort: loadSort(),
+  st: null, quota: {}, history: {}, quotaSeq: {}, folded: loadFold(), sort: loadSort(), order: loadOrder(),
   claim: null, busyKey: null, checking: false, checkProgress: {done:0,total:0},
-  refreshing: false, queued: false, queuedForce: false, queuedKey: null,
+  refreshing: false, queued: false, queuedForce: false, queuedKey: null, queuedDone: [],
   notice: null, noticeClosed: false, offline: false, lastRefresh: 0,
   renderedKeys: "", lastFocus: null, confirmResolve: null,
   renameKey: null, exportPath: null, oauthActive: false, oauthProvider: null, oauthState: null,
@@ -214,6 +214,15 @@ var S = {
 function loadFold() { try { return JSON.parse(localStorage.getItem("hub-fold") || "{}"); } catch(e) { return {}; } }
 function saveFold() { try { localStorage.setItem("hub-fold", JSON.stringify(S.folded)); } catch(e) {} }
 function loadSort() { try { return localStorage.getItem("hub-sort") || "current"; } catch(e) { return "current"; } }
+function loadOrder() { try { var a = JSON.parse(localStorage.getItem("hub-order") || "[]"); return Array.isArray(a) ? a : []; } catch(e) { return []; } }
+function saveOrder() { try { localStorage.setItem("hub-order", JSON.stringify(S.order)); } catch(e) {} }
+function ensureOrder() {
+  if (!S.st) return;
+  var keys = (S.st.profiles || []).map(function(p) { return p.key; });
+  var next = S.order.filter(function(k) { return keys.indexOf(k) >= 0; });
+  keys.forEach(function(k) { if (next.indexOf(k) < 0) next.push(k); });
+  if (next.join("|") !== S.order.join("|")) { S.order = next; saveOrder(); } else { S.order = next; }
+}
 
 /* ---------------- theme ---------------- */
 function resolvedTheme(mode) {
@@ -231,8 +240,8 @@ function applyTheme(mode) {
   try { localStorage.setItem("hub-theme", S.theme); } catch(e) {}
 }
 function toggleTheme() {
-  // 浅色 → 深色 → 跟随系统
-  applyTheme(S.theme === "light" ? "dark" : (S.theme === "dark" ? "system" : "light"));
+  // 按“当前实际显示”切换：首击在浅色下立刻变深色（旧实现 system→light 会看起来没反应）
+  applyTheme(resolvedTheme(S.theme) === "dark" ? "light" : "dark");
 }
 
 /* ---------------- toasts ---------------- */
@@ -368,10 +377,21 @@ function sortedProfiles() {
   } else if (S.sort === "expiry") {
     arr.sort(function(a, b) {
       var qa = quotaData(S.quota[a.key]), qb = quotaData(S.quota[b.key]);
-      var ha = qa ? soonestExpireH(qa.balances || []) : null, hb = qb ? soonestExpireH(qb.balances || []) : null;
+      var ha = qa ? minExpiryH(qa.balances || []) : null, hb = qb ? minExpiryH(qb.balances || []) : null;
       return (ha === null ? 1e9 : ha) - (hb === null ? 1e9 : hb) || cur(a, b);
     });
-  } else if (S.sort !== "manual") {
+  } else if (S.sort === "manual") {
+    ensureOrder();
+    var idx = {};
+    S.order.forEach(function(k, i) { idx[k] = i; });
+    arr.sort(function(a, b) {
+      var ia = idx[a.key], ib = idx[b.key];
+      if (ia === undefined && ib === undefined) return String(a.label).localeCompare(String(b.label));
+      if (ia === undefined) return 1;
+      if (ib === undefined) return -1;
+      return ia - ib;
+    });
+  } else {
     arr.sort(cur);
   }
   return arr;
@@ -400,6 +420,15 @@ function soonestExpireH(balances) {
   });
   return m;
 }
+function minExpiryH(balances) {
+  var m = null;
+  (balances || []).forEach(function(b) {
+    if (bucketAvail(b) <= 0) return;
+    var h = bucketRemainH(b);
+    if (h !== null && h > 0 && (m === null || h < m)) m = h;
+  });
+  return m;
+}
 
 /* ---------------- card rendering ---------------- */
 function isFolded(p) {
@@ -416,7 +445,27 @@ function setFold(key, v) {
     if (chev) chev.setAttribute("aria-expanded", v ? "false" : "true");
     var body = node.querySelector(".acct-body");
     if (body) body.hidden = !!v;
+    // 同步签名：否则“折叠 → 全部展开”时新旧签名可能恰好相同，patch 会被跳过
+    var p = profileByKey(key);
+    if (p) node.setAttribute("data-sig", cardSig(p));
   }
+}
+function moveProfile(key, delta) {
+  var list = sortedProfiles().map(function(p) { return p.key; });
+  var i = list.indexOf(key), j = i + delta;
+  if (i < 0 || j < 0 || j >= list.length) return;
+  var tmp = list[i]; list[i] = list[j]; list[j] = tmp;
+  S.order = list; saveOrder(); renderList();
+}
+function doRefreshQuota() {
+  var n = displayProfiles().length;
+  refreshAll(true, null, function() {
+    var failed = displayProfiles().filter(function(p) {
+      var q = S.quota[p.key]; return q && q.ok === false;
+    }).length;
+    if (failed) pushToast(t("t_quota_refreshed_partial", {n: Math.max(0, n - failed), f: failed}), "warn");
+    else pushToast(t("t_quota_refreshed", {n: n}), "ok");
+  });
 }
 function foldAll(v) {
   displayProfiles().forEach(function(p) { S.folded[p.key] = !!v; });
@@ -425,7 +474,7 @@ function foldAll(v) {
 }
 
 function cardSig(p) {
-  return [LANG, p.key, p.label, p.is_current, p.jwt_expired, p.error || "",
+  return [LANG, S.sort, S.sort === "manual" ? S.order.indexOf(p.key) : "", p.key, p.label, p.is_current, p.jwt_expired, p.error || "",
     JSON.stringify(S.quota[p.key] || null),
     JSON.stringify((S.st.benefits || {})[p.key] || null),
     JSON.stringify((S.history[p.key] || {}).forecast || null),
@@ -434,6 +483,16 @@ function cardSig(p) {
     S.busyKey === p.key ? 1 : 0].join("|");
 }
 
+function manualMoveButtons(p) {
+  var list = sortedProfiles();
+  var idx = -1;
+  for (var i = 0; i < list.length; i++) if (list[i].key === p.key) { idx = i; break; }
+  var up = idx > 0, down = idx >= 0 && idx < list.length - 1;
+  return '<button class="icon-btn small" data-action="move-up" data-key="' + esc(p.key) + '"' + (up ? "" : " disabled")
+    + ' aria-label="' + esc(t("move_up")) + '" title="' + esc(t("move_up")) + '"><svg class="icon"><use href="#i-up"/></svg></button>'
+    + '<button class="icon-btn small" data-action="move-down" data-key="' + esc(p.key) + '"' + (down ? "" : " disabled")
+    + ' aria-label="' + esc(t("move_down")) + '" title="' + esc(t("move_down")) + '"><svg class="icon"><use href="#i-down"/></svg></button>';
+}
 function cardHtml(p) {
   var m = provMeta(p.provider);
   var folded = isFolded(p);
@@ -458,6 +517,7 @@ function cardHtml(p) {
     + (folded && benCount > 0 ? '<span class="tag warn">' + esc(t("ben_has", {n: benCount})) + '</span>' : '')
     + '</span>'
     + '<span class="acct-actions">'
+    + (S.sort === "manual" && !p.pseudo ? manualMoveButtons(p) : "")
     + (p.pseudo ? "" : '<button class="icon-btn" data-action="rename" data-key="' + esc(p.key) + '" aria-label="' + esc(t("rename")) + '" title="' + esc(t("rename")) + '"><svg class="icon"><use href="#i-pencil"/></svg></button>')
     + (p.pseudo ? "" : '<button class="icon-btn danger" data-action="del" data-key="' + esc(p.key) + '" aria-label="' + esc(t("delete")) + '" title="' + esc(t("delete")) + '"><svg class="icon"><use href="#i-trash"/></svg></button>')
     + '</span></div>'
@@ -706,6 +766,9 @@ function renderHeader() {
   el("notifyTgl").checked = !(st.settings && st.settings.notify_enabled === false);
   el("lastCheckTxt").textContent = st.last_check ? t("last_check") + " " + fmtT2(st.last_check) : t("never_checked");
   if (document.activeElement !== el("sortSel")) el("sortSel").value = S.sort;
+  if (S.sort === "manual") ensureOrder();
+  var sh = el("sortHint");
+  if (sh) { sh.hidden = S.sort !== "manual"; sh.textContent = t("sort_manual_hint"); }
   syncForm(false);
   renderCheckButton();
 }
@@ -800,7 +863,7 @@ function refreshAll(force, forceKey, done) {
     S.queued = true;
     S.queuedForce = S.queuedForce || !!force;
     if (forceKey) S.queuedKey = forceKey;
-    if (done) setTimeout(done, 50);
+    if (done) S.queuedDone.push(done);
     return;
   }
   S.refreshing = true;
@@ -833,11 +896,17 @@ function refreshAll(force, forceKey, done) {
   }).finally(function() {
     S.refreshing = false;
     renderCheckButton();
-    if (done) done();
+    var callbacks = S.queuedDone; S.queuedDone = [];
     if (S.queued) {
       var f = S.queuedForce, k = S.queuedKey;
       S.queued = false; S.queuedForce = false; S.queuedKey = null;
-      refreshAll(f, k, null);
+      refreshAll(f, k, function() {
+        if (done) done();
+        callbacks.forEach(function(cb) { cb(); });
+      });
+    } else {
+      if (done) done();
+      callbacks.forEach(function(cb) { cb(); });
     }
   });
 }
@@ -1389,7 +1458,7 @@ document.addEventListener("click", function(e) {
     case "capture": doCapture(); break;
     case "bak": showBak(); break;
     case "checkall": doCheckAll(); break;
-    case "refresh": refreshAll(true, null, null); break;
+    case "refresh": doRefreshQuota(); break;
     case "prov": startOauth(elt.getAttribute("data-provider")); break;
     case "add-close": closeAddModal(true); break;
     case "oauth-reopen": api("oauth_open").catch(function(e) { pushToast(errText(e), "bad"); }); break;
@@ -1429,6 +1498,8 @@ document.addEventListener("click", function(e) {
     case "foldall": foldAll(true); break;
     case "unfoldall": foldAll(false); break;
     case "switch": doSwitch(key); break;
+    case "move-up": moveProfile(key, -1); break;
+    case "move-down": moveProfile(key, 1); break;
     case "del": doDelete(key); break;
     case "rename": doRename(key); break;
     case "checkone": checkOne(key); break;
@@ -1469,7 +1540,12 @@ document.addEventListener("change", function(e) {
   else if (id === "hotTgl") saveSettings({ hotSwitch: !!e.target.checked }, true).catch(function() {});
   else if (id === "safeModeTgl") saveSettings({ safeMode: !!e.target.checked }, true).catch(function() {});
   else if (id === "langSel") setLang(e.target.value);
-  else if (id === "sortSel") { S.sort = e.target.value; try { localStorage.setItem("hub-sort", S.sort); } catch(e2) {} renderList(); }
+  else if (id === "sortSel") {
+    S.sort = e.target.value;
+    if (S.sort === "manual") ensureOrder();
+    try { localStorage.setItem("hub-sort", S.sort); } catch(e2) {}
+    renderAll();
+  }
 });
 
 document.addEventListener("keydown", function(e) {
