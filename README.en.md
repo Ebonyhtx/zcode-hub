@@ -26,7 +26,7 @@ Switches only the login identity — projects, sessions and settings stay untouc
 - **Benefit detection & one-click claim** — client-banner source (`marketing/touch`, `billing/preview` fallback); per-account, all-accounts or tray trigger; scheduled auto-check with notifications; claim with a manual captcha in your browser (no automated claiming)
 - **Encrypted snapshots** — AES-256-GCM whole-file encryption, random key sealed with Windows DPAPI (bound to current user + machine)
 - **Password backups** — portable `.zhb` v2 bundles (PBKDF2-HMAC-SHA256 120k + AES-256-GCM) re-encrypted for the target machine
-- **UX** — light / dark / system theme, custom titlebar, window geometry memory, autostart, close-to-tray, start minimized, rename & sort, undo delete, claim history, bilingual UI (zh/en)
+- **UX** — light / dark theme, custom titlebar, window geometry memory, autostart, close-to-tray, start minimized, rename & manual reorder, undo delete, claim history, 2/3-column wide layout, bilingual UI (zh/en)
 
 ## Install
 
@@ -47,7 +47,7 @@ Grab `ZCode Hub_x.x.x_x64-setup.exe` from [Releases](../../releases). Windows 10
 
 See [SECURITY.md](SECURITY.md) for the full data-storage & encryption design. Highlights:
 
-- All data lives in `%APPDATA%\Roaming\zcode-hub`; no telemetry, no remote storage
+- All data lives in `%APPDATA%\Roaming\zcode-hub`; no first-party telemetry, no remote storage (benefit detection reports launch events like the official client; auto-check can be disabled)
 - Snapshots are AES-256-GCM encrypted with a random key sealed by DPAPI — copied files are undecryptable elsewhere
 - All writes are atomic (temp + rename); account ids are whitelisted against path traversal; failed switches roll back; a corrupt `snapkey` fails closed instead of being regenerated
 - Audit log, quota history and benefit cache use opaque hashed account keys — no emails or display names on disk
