@@ -423,6 +423,32 @@ fn jwt_expired(creds: &Value) -> bool {
     formats::jwt_expired_with(creds, &|s: &str| decrypt_value(s).ok(), chrono::Utc::now().timestamp(), 30)
 }
 
+#[cfg(test)]
+mod preview_protocol_tests {
+    use super::*;
+
+    #[test]
+    fn preview_missing_data_is_error_not_empty_benefits() {
+        // 服务端返回 code 0 但没有 data 字段：必须判为检测失败（客户端同样按错误处理）
+        let j = json!({"code": 0, "msg": "", "logid": "x"});
+        assert!(preview_protocol_error(&j).is_some());
+        // data 存在且 plans 为空：正常，表示确实没有可领项
+        let j = json!({"code": 0, "msg": "", "data": {"plans": []}});
+        assert!(preview_protocol_error(&j).is_none());
+        assert!(parse_preview_plans(&j).is_empty());
+        // 业务错误码带 msg
+        let j = json!({"code": 40001, "msg": "token invalid"});
+        assert_eq!(preview_protocol_error(&j).as_deref(), Some("token invalid"));
+        // data 非对象（null / 数组）同样是协议异常
+        assert!(preview_protocol_error(&json!({"code": 0, "data": null})).is_some());
+        assert!(preview_protocol_error(&json!({"code": 0, "data": []})).is_some());
+        // 正常有可领项：无错误且能解析
+        let j = json!({"code": 0, "data": {"plans": [{"plan_id": "p1", "name": "体验套餐", "entitlements": [{"show_name": "GLM-5.3-Flash", "grant_units": 300000000, "unit_type": "token"}]}]}});
+        assert!(preview_protocol_error(&j).is_none());
+        assert_eq!(parse_preview_plans(&j).len(), 1);
+    }
+}
+
 // 自启快捷方式与目录/浏览器打开收敛到 platform.rs
 fn autostart_enabled() -> bool { platform::autostart_enabled() }
 
@@ -1062,10 +1088,10 @@ fn fetch_quota(key: String, force: Option<bool>) -> serde_json::Value {
     }
     let token = match _get_jwt_token(&key) { Ok(t) => t, Err(e) => return json!({"ok": false, "error": e}) };
     let mid = telemetry_device_mid();
-    let resp = match http().get("https://zcode.z.ai/api/v1/zcode-plan/billing/balance")
+    let resp = match zcode_api_headers(http().get("https://zcode.z.ai/api/v1/zcode-plan/billing/balance")
+        .query(&[("app_version", "3.17.1")])
         .header("Authorization", format!("Bearer {}", token))
-        .header("X-Device-Mid", &mid).header("X-Client-Language", "zh-CN")
-        .header("X-ZCode-App-Version", "3.17.1")
+        .header("X-Device-Mid", &mid))
         .timeout(std::time::Duration::from_secs(30)).send() {
         Ok(r) => match r.json::<Value>() { Ok(j) => json!({"ok": true, "data": j}), Err(e) => json!({"ok": false, "error": e.to_string()}) },
         Err(e) => json!({"ok": false, "error": e.to_string()}),
@@ -1161,15 +1187,38 @@ fn parse_preview_plans(j: &Value) -> Vec<Value> {
 // 官方「可领取预览」：GET /api/v1/zcode-plan/billing/preview —— 客户端领取弹窗同源接口，
 // 返回 data.plans[]（每个含 plan_id/name/entitlements[grant_units]）。空数组 = 当前无可领。
 // 注意：429 限流存在，批量检测时逐账号间加间隔。
+// 与客户端一致的请求头（UA / X-Title / X-Platform 等）；服务端按客户端上下文做路由与风控
+fn zcode_api_headers(rb: reqwest::blocking::RequestBuilder) -> reqwest::blocking::RequestBuilder {
+    rb.header("User-Agent", "ZCode/3.17.1")
+        .header("X-ZCode-App-Version", "3.17.1")
+        .header("X-Title", "Z Code@electron")
+        .header("X-Platform", "win32-x64")
+        .header("X-Os-Category", "windows")
+        .header("X-Client-Language", "zh-CN")
+        .header("HTTP-Referer", "https://zcode.z.ai")
+}
+
+// preview 响应分类（纯函数）：code!=0 → 业务错误；缺 data 字段 → 协议/身份异常。
+// 注意：客户端对"缺 data"按错误处理（manual_claim_preview_missing_data），
+// 因此这里绝不能再把它当成「无待领福利」，否则会给出误导性的 ✓。
+fn preview_protocol_error(j: &Value) -> Option<String> {
+    if j.get("code").and_then(|c| c.as_i64()) != Some(0) {
+        let msg = j.get("msg").and_then(|m| m.as_str()).map(|s| s.trim()).filter(|s| !s.is_empty()).unwrap_or("preview error");
+        return Some(msg.to_string());
+    }
+    match j.get("data") {
+        Some(d) if d.is_object() => None,
+        _ => Some("接口未返回体验套餐数据（客户端版本或账号状态可能已变化）".to_string()),
+    }
+}
+
 fn _benefits_key_result(key: &str) -> Value {
     let ts = chrono::Utc::now().timestamp();
     let token = match _get_jwt_token(key) { Ok(t) => t, Err(e) => return json!({"ok": false, "error": e, "count": 0, "campaigns": [], "checked_at": ts}) };
     let client = reqwest::blocking::Client::new();
-    let resp = client.get("https://zcode.z.ai/api/v1/zcode-plan/billing/preview")
+    let resp = zcode_api_headers(client.get("https://zcode.z.ai/api/v1/zcode-plan/billing/preview")
         .query(&[("app_version", "3.17.1"), ("platform", "win32-x64")])
-        .header("Authorization", format!("Bearer {}", token))
-        .header("X-Client-Language", "zh-CN")
-        .header("X-ZCode-App-Version", "3.17.1")
+        .header("Authorization", format!("Bearer {}", token)))
         .timeout(std::time::Duration::from_secs(30)).send();
     let j: Value = match resp {
         Ok(r) => {
@@ -1180,9 +1229,8 @@ fn _benefits_key_result(key: &str) -> Value {
         }
         Err(e) => return json!({"ok": false, "error": e.to_string(), "count": 0, "campaigns": [], "checked_at": ts}),
     };
-    if j.get("code").and_then(|c| c.as_i64()) != Some(0) {
-        let msg = j.get("msg").and_then(|m| m.as_str()).unwrap_or("preview error");
-        return json!({"ok": false, "error": msg, "count": 0, "campaigns": [], "checked_at": ts});
+    if let Some(err) = preview_protocol_error(&j) {
+        return json!({"ok": false, "error": err, "count": 0, "campaigns": [], "checked_at": ts});
     }
     let camps = parse_preview_plans(&j);
     json!({"ok": true, "count": camps.len(), "campaigns": camps, "checked_at": ts})

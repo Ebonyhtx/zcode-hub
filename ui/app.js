@@ -11,7 +11,7 @@ var I18N = {
     accounts: "Accounts · 账号库", n_accounts: " 个账号", connecting: "正在连接…", no_accounts: "暂无账号 · 点上方「添加账号」登录，或「保存当前登录」收编现有登录",
     unknown: "未知", current: "当前", expired: "已过期", not_checked: "🔎 未检测", ben_none: "✓ 无待领福利", ben_has: "🎁 {n} 个待领福利", ben_fail: "⚠ 检测失败: {e}",
     claim: "去领取", use_now: "✓ 当前使用中", switch_to: "⇄ 切换到此账号", del_title: "删除存档", fold_all: "全部收起", expand_all: "全部展开", mini_title: "只检测这个账号的福利",
-    no_quota: "暂无额度数据", quota_fail: "获取失败", used_up: "已用完", remain: " 剩余", total: "总 ", used: " · 已用 ", expires: " 到期",
+    no_quota: "暂无额度数据", no_quota_hint: "客户端当前无生效套餐（可能已到期或待领取）——若客户端显示「领取」，领取后额度会重新出现", quota_fail: "获取失败", used_up: "已用完", remain: " 剩余", total: "总 ", used: " · 已用 ", expires: " 到期",
     exp_soon: "⏰ {h} 小时后到期", exp_lt1h: "⏰ 不到 1 小时后到期", exptag_tip: "有额度将在 24 小时内到期",
     burn: " · ⏳ 预计还可 ~{d} 天", burn_lt1: " · ⏳ 预计不足 1 天",
     week_plan: "周末福利", base_plan: "基础套餐", other_plan: "其他",
@@ -58,7 +58,7 @@ var I18N = {
     accounts: "Accounts", n_accounts: " accounts", connecting: "Connecting…", no_accounts: "No accounts yet · use \"Add account\" or \"Save current login\"",
     unknown: "Unknown", current: "Current", expired: "Expired", not_checked: "🔎 Not checked", ben_none: "✓ Nothing to claim", ben_has: "🎁 {n} claimable", ben_fail: "⚠ Check failed: {e}",
     claim: "Claim", use_now: "✓ In use", switch_to: "⇄ Switch to this", del_title: "Delete snapshot", fold_all: "Collapse all", expand_all: "Expand all", mini_title: "Check this account only",
-    no_quota: "No quota data", quota_fail: "Fetch failed", used_up: "Used up", remain: " left", total: "Total ", used: " · used ", expires: " expires",
+    no_quota: "No quota data", no_quota_hint: "No active plan in the client (expired or awaiting claim) — quota reappears after claiming in the client", quota_fail: "Fetch failed", used_up: "Used up", remain: " left", total: "Total ", used: " · used ", expires: " expires",
     exp_soon: "⏰ expires in {h}h", exp_lt1h: "⏰ expires in <1h", exptag_tip: "Some quota expires within 24h",
     burn: " · ⏳ ~{d}d left at this pace", burn_lt1: " · ⏳ under a day left",
     week_plan: "Weekend bonus", base_plan: "Base plan", other_plan: "Other",
@@ -211,7 +211,7 @@ function soonestExpireH(balances) {
   return m;
 }
 function renderBuckets(balances, plans, burnMap) {
-  if (!Array.isArray(balances) || !balances.length) return '<div style="font-size:12px;padding:4px 0;color:var(--faint)">' + esc(t("no_quota")) + '</div>';
+  if (!Array.isArray(balances) || !balances.length) return '<div style="font-size:12px;padding:4px 0;color:var(--faint)">' + esc(t("no_quota")) + '<div style="font-size:10.5px;margin-top:2px">' + esc(t("no_quota_hint")) + '</div></div>';
   var groups = {}, order = [];
   balances.forEach(function(b) {
     var key = planTag(plans, b.plan_id) || t("other_plan");
