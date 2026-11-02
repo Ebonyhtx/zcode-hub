@@ -454,14 +454,14 @@ fn open_zcode_data_dir() -> serde_json::Value { open_in_explorer(&v2_dir()) }
 #[tauri::command]
 fn check_update() -> serde_json::Value {
     let current = env!("CARGO_PKG_VERSION");
-    let resp = http().get("https://api.github.com/repos/Ebonyhtx/zcode-hub/releases/latest")
+    // 走 releases/latest/download/latest.json（CDN 静态文件，无 GitHub API 未认证限频）
+    let resp = http().get("https://github.com/Ebonyhtx/zcode-hub/releases/latest/download/latest.json")
         .header("User-Agent", "zcode-hub")
         .timeout(std::time::Duration::from_secs(15)).send();
     match resp {
-        Ok(r) if r.status().as_u16() == 200 => {
+        Ok(r) if r.status().is_success() => {
             let j: Value = match r.json() { Ok(j) => j, Err(e) => return json!({"ok": false, "error": e.to_string()}) };
-            let latest = j.get("tag_name").and_then(|v| v.as_str()).unwrap_or("").trim_start_matches('v').to_string();
-            let url = j.get("html_url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let latest = j.get("version").and_then(|v| v.as_str()).unwrap_or("").trim_start_matches('v').to_string();
             let pv = |s: &str| s.split('.').map(|x| x.parse::<u64>().unwrap_or(0)).collect::<Vec<u64>>();
             let (a, b) = (pv(&latest), pv(current));
             let mut up_to_date = true;
@@ -470,10 +470,10 @@ fn check_update() -> serde_json::Value {
                 if l > c { up_to_date = false; break; }
                 if l < c { up_to_date = true; break; }
             }
-            json!({"ok": true, "current": current, "latest": latest, "up_to_date": up_to_date, "url": url})
+            json!({"ok": true, "current": current, "latest": latest, "up_to_date": up_to_date,
+                   "url": "https://github.com/Ebonyhtx/zcode-hub/releases/latest"})
         }
-        Ok(r) => json!({"ok": true, "current": current, "latest": "", "up_to_date": true,
-                        "note": format!("仓库当前不可公开查询（HTTP {}），转公开后可在线检查更新", r.status().as_u16())}),
+        Ok(r) => json!({"ok": false, "error": format!("检查更新失败（HTTP {}），请稍后重试", r.status().as_u16())}),
         Err(e) => json!({"ok": false, "error": e.to_string()}),
     }
 }
