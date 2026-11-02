@@ -12,10 +12,13 @@
 cd src-tauri && cargo build
 # 运行单元测试
 cargo test
-# 打安装包
-npx --yes @tauri-apps/cli build --bundles nsis
-# 前端脚本语法检查
+# 零警告门禁
+cargo clippy --all-targets -- -D warnings
+# 打安装包（与 CI 相同的 CLI 版本）
+npx --yes @tauri-apps/cli@2.12.4 build --bundles nsis
+# 前端脚本语法 + 中英键集合一致性
 node --check ui/app.js
+node scripts/i18n-check.js
 ```
 
 ## 防泄密机制（必读）
