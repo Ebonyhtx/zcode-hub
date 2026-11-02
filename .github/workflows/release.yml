@@ -12,10 +12,16 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Secret scan before publish
         shell: bash
         run: bash scripts/secret-scan.sh --history
+
+      - name: Repo consistency gate
+        shell: bash
+        run: bash scripts/repo-check.sh
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
@@ -29,7 +35,8 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npx --yes @tauri-apps/cli@latest build --bundles nsis
+        # 固定 CLI 版本：@latest 会让同一 tag 的构建产物不可复现
+        run: npx --yes @tauri-apps/cli@2.12.4 build --bundles nsis
 
       - name: Prepare latest.json (updater manifest)
         shell: pwsh

@@ -87,8 +87,16 @@ case "$MODE" in
       echo "$M" | verdict
       r2=$?
     fi
+    # commit message 也能泄露凭据（git commit -m "token=..."），必须一起扫
+    MSG=$(git log --all --format=%B | scan_content)
+    r3=0
+    if [ -n "$MSG" ]; then
+      echo "$MSG" | verdict
+      r3=$?
+    fi
     [ $r1 -ne 0 ] && exit 1
     [ $r2 -ne 0 ] && exit 1
+    [ $r3 -ne 0 ] && exit 1
     echo "[secret-scan] 通过 ✓"
     exit 0
     ;;
@@ -132,8 +140,20 @@ case "$MODE" in
     else
       echo "  ✗ 扫描器误报（说明性文字被拦截）"; cd /; rm -rf "$TMP"; exit 1
     fi
-    cd /
-    rm -rf "$TMP"
+    # commit message 泄漏也必须被 --history 抓到
+    TMP2=$(mktemp -d)
+    git init -q "$TMP2" 2>/dev/null
+    cd "$TMP2" || exit 1
+    git config user.email "selftest@example.invalid"
+    git config user.name "selftest"
+    printf 'clean\n' > ok.txt && git add ok.txt
+    git commit -q -m "feat: add demo account $FIXTURE"
+    if bash "$SELF" --history >/dev/null 2>&1; then
+      echo "  ✗ 扫描器漏报（commit message 中的泄漏）"; cd /; rm -rf "$TMP" "$TMP2"; exit 1
+    else
+      echo "  ✓ commit message 泄漏被正确拦截"
+    fi
+    cd /; rm -rf "$TMP" "$TMP2"
     echo "[secret-scan] 自检通过 ✓"
     exit 0
     ;;
