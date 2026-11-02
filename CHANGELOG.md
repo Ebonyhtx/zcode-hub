@@ -3,6 +3,12 @@
 本文件记录 ZCode Hub 的显著变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.7.1] - 2026-11-02
+
+### 调整
+- 领取相关请求补齐客户端同款头（X-Release-Channel / X-Client-Timezone），与 zcode-switch 已验证的请求形态一致
+- 新增验证码回环服务的集成测试（起服务 → 取页面 → 回传参数 → 主流程接收）
+
 ## [1.7.0] - 2026-11-02
 
 ### 新增
