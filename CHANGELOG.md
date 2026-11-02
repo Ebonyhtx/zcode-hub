@@ -7,7 +7,7 @@
 
 ### 内部
 - 将单文件 `main.rs` 拆分为 util / crypto / identity / profiles / quota / benefits / settings / client / system / window / oauth / app 模块；`main.rs` 只保留入口与 37 个命令注册，行为不变
-- GitHub Actions 全部改为完整 commit SHA 固定（checkout v4.4.0、rust-cache v2.9.3、upload-artifact v4.6.2、action-gh-release v2.6.2、rust-toolchain stable 分支），并保留版本注释
+- GitHub Actions 全部改为完整 commit SHA 固定（checkout v5.1.0、rust-cache v2.9.3、upload-artifact v4.6.2、action-gh-release v2.6.2、rust-toolchain stable 分支），并保留版本注释
 - 拆分前新增 12 个边界回归测试：snapkey 损坏绝不覆盖、快照篡改/错误密钥、`.zhb` 口令备份往返、回收站路径穿越、设置夹取与枚举校验、额度 HTTP/业务错误分类、福利计划去重、客户端版本兼容；Rust 测试总数为 58
 
 ## [1.9.1] - 2026-11-03
