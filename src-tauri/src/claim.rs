@@ -9,7 +9,7 @@
 
 use serde_json::{json, Value};
 use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 
 pub const EVENT_REPORT_URL: &str = "https://zcode.z.ai/api/v1/event/report";
@@ -21,6 +21,7 @@ pub const ACTIVATION_EVENTS: [&str; 2] = ["app_launch", "app_daily_active"];
 pub const MARKETING_TOUCH_URL: &str = "https://zcode.z.ai/api/v1/marketing/touch";
 const SCREEN_RESOLUTION_FALLBACK: &str = "2560x1440";
 const CAPTCHA_TIMEOUT_SECS: u64 = 150;
+const MAX_HTTP_BYTES: usize = 64 * 1024;
 
 /// 上报事件所需的环境信息（注入以便测试；真实值由 platform 提供）
 #[derive(Debug, Clone)]
@@ -317,16 +318,46 @@ pub fn start_captcha_flow(cfg: &Value) -> Result<CaptchaFlow, String> {
         while Instant::now() < deadline {
             match listener.accept() {
                 Ok((mut stream, _)) => {
-                    let mut buf = [0u8; 8192];
-                    let n = stream.read(&mut buf).unwrap_or(0);
-                    let req = String::from_utf8_lossy(&buf[..n]);
-                    let first = req.lines().next().unwrap_or("");
-                    if first.starts_with(&format!("GET /{}/", nonce)) || first == format!("GET /{}", nonce) {
+                    let req = match read_http_request(&mut stream, MAX_HTTP_BYTES) {
+                        Ok(r) => r,
+                        Err(_) => {
+                            let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                            continue;
+                        }
+                    };
+                    let head = req.split("\r\n\r\n").next().unwrap_or("");
+                    let first = head.lines().next().unwrap_or("");
+                    let mut parts = first.split_whitespace();
+                    let method = parts.next().unwrap_or("");
+                    let path = parts.next().unwrap_or("");
+                    // 只接受本机回环 Host，防止 DNS rebinding / 本机其他页面误投递
+                    let host = header_value(head, "host").unwrap_or_default();
+                    if host != format!("127.0.0.1:{}", port) && host != format!("localhost:{}", port) {
+                        let _ = stream.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        continue;
+                    }
+                    let page_path = format!("/{}/", nonce);
+                    let bare_path = format!("/{}", nonce);
+                    if method == "GET" && (path == page_path || path == bare_path) {
                         let resp = format!(
                             "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                             html.len(), html);
                         let _ = stream.write_all(resp.as_bytes());
-                    } else if first.starts_with(&format!("POST /{}/result", nonce)) {
+                    } else if method == "OPTIONS" {
+                        let _ = stream.write_all(b"HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: http://127.0.0.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    } else if method == "POST" && path == format!("/{}/result", nonce) {
+                        // 校验来源与类型：结果只允许本页脚本提交
+                        let origin_ok = match header_value(head, "origin") {
+                            Some(o) => o == format!("http://127.0.0.1:{}", port) || o == format!("http://localhost:{}", port),
+                            None => true, // 部分 WebView 不发 Origin，Host 已校验
+                        };
+                        let ct_ok = header_value(head, "content-type")
+                            .map(|c| c.to_ascii_lowercase().starts_with("application/json"))
+                            .unwrap_or(false);
+                        if !origin_ok || !ct_ok {
+                            let _ = stream.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                            continue;
+                        }
                         let body = req.split("\r\n\r\n").nth(1).unwrap_or("");
                         let v: Value = serde_json::from_str(body).unwrap_or(json!({}));
                         let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"ok\":true}");
@@ -348,6 +379,49 @@ pub fn start_captcha_flow(cfg: &Value) -> Result<CaptchaFlow, String> {
     Ok(CaptchaFlow { url, rx })
 }
 
+fn find_header_end(b: &[u8]) -> Option<usize> {
+    b.windows(4).position(|w| w == b"\r\n\r\n")
+}
+
+fn header_value(head: &str, name: &str) -> Option<String> {
+    head.lines().skip(1).find_map(|l| {
+        let (k, v) = l.split_once(':')?;
+        if k.trim().eq_ignore_ascii_case(name) { Some(v.trim().to_string()) } else { None }
+    })
+}
+
+fn parse_content_length(head: &[u8]) -> usize {
+    header_value(&String::from_utf8_lossy(head), "content-length")
+        .and_then(|v| v.parse::<usize>().ok()).unwrap_or(0)
+}
+
+/// 读取完整 HTTP 请求：先读到 header 结束，再按 Content-Length 读 body（上限 64KB）。
+/// 单次 read 会把长参数截断，导致用户完成验证码却拿不到结果。
+fn read_http_request(stream: &mut TcpStream, limit: usize) -> Result<String, String> {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let mut buf: Vec<u8> = Vec::new();
+    let mut tmp = [0u8; 4096];
+    let mut header_end: Option<usize> = None;
+    let mut content_len: usize = 0;
+    loop {
+        if header_end.is_none() {
+            if let Some(pos) = find_header_end(&buf) {
+                header_end = Some(pos);
+                content_len = parse_content_length(&buf[..pos]).min(limit);
+            }
+        }
+        if let Some(pos) = header_end {
+            if buf.len() >= pos + 4 + content_len { break; }
+        }
+        if buf.len() > limit { return Err("request too large".into()); }
+        let n = stream.read(&mut tmp).map_err(|e| e.to_string())?;
+        if n == 0 { break; }
+        buf.extend_from_slice(&tmp[..n]);
+    }
+    if buf.len() > limit { return Err("request too large".into()); }
+    Ok(String::from_utf8_lossy(&buf).to_string())
+}
+
 /// 等待用户完成验证（最多 150s）；返回 {param, region}
 pub fn wait_captcha(flow: CaptchaFlow) -> Result<Value, String> {
     flow.rx.recv_timeout(Duration::from_secs(CAPTCHA_TIMEOUT_SECS + 5))
@@ -355,9 +429,16 @@ pub fn wait_captcha(flow: CaptchaFlow) -> Result<Value, String> {
 }
 
 fn captcha_html(scene_id: &str, prefix: &str, region: &str, nonce: &str) -> String {
-    let esc = |s: &str| s.replace('\\', "\\\\").replace('\'', "\\'");
+    // 配置值来自服务端：除反斜杠/引号外还要转义 < > & 与 U+2028/2029，
+    // 否则 `</script>` 或换行可以提前终止脚本块。
+    let esc = |s: &str| s.replace('\\', "\\\\").replace('\'', "\\'")
+        .replace('\n', "\\n").replace('\r', "\\r")
+        .replace('<', "\\u003c").replace('>', "\\u003e").replace('&', "\\u0026")
+        .replace('\u{2028}', "\\u2028").replace('\u{2029}', "\\u2029");
     format!(r#"<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><title>ZCode Hub · 领取验证</title>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' https:; style-src 'unsafe-inline'; img-src data: https:; connect-src https: wss: http://127.0.0.1:*; font-src data: https:; frame-src https:; media-src https:">
+<title>ZCode Hub · 领取验证</title>
 <style>
 html,body{{background:#0c0d13;color:#d8d8e6;font:14px/1.6 "Segoe UI","Microsoft YaHei",sans-serif;margin:0}}
 .wrap{{max-width:420px;margin:0 auto;padding:48px 24px}}
@@ -523,6 +604,33 @@ mod tests {
         let got = wait_captcha(flow).expect("receive param");
         assert_eq!(got["param"], json!("p123"));
         assert_eq!(got["region"], json!("cn"));
+    }
+
+    #[test]
+    fn captcha_loopback_reads_body_larger_than_8k() {
+        let cfg = json!({"enabled": true, "sceneId": "scene-test", "prefix": "px", "region": "cn"});
+        let flow = start_captcha_flow(&cfg).expect("flow start");
+        let result_url = format!("{}/result", flow.url.trim_end_matches('/'));
+        let big = "p".repeat(20_000);
+        let client = reqwest::blocking::Client::new();
+        let r = client.post(&result_url).json(&json!({"param": big, "region": "cn"}))
+            .send().expect("POST result");
+        assert!(r.status().is_success());
+        let got = wait_captcha(flow).expect("receive param");
+        assert_eq!(got["param"].as_str().unwrap().len(), 20_000);
+    }
+
+    #[test]
+    fn captcha_loopback_rejects_foreign_origin() {
+        let cfg = json!({"enabled": true, "sceneId": "scene-test", "prefix": "px", "region": "cn"});
+        let flow = start_captcha_flow(&cfg).expect("flow start");
+        let result_url = format!("{}/result", flow.url.trim_end_matches('/'));
+        let client = reqwest::blocking::Client::new();
+        let r = client.post(&result_url)
+            .header("Origin", "http://evil.example")
+            .json(&json!({"param": "x", "region": "cn"}))
+            .send().expect("POST result");
+        assert_eq!(r.status().as_u16(), 403);
     }
 
     #[test]

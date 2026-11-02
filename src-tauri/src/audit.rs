@@ -1,15 +1,19 @@
 //! 本地审计日志（`audit.jsonl`，追加写 JSONL）。
 //!
-//! 隐私红线：只记 profile **key**（目录名），不记 label / 邮箱 / 令牌——
+//! 隐私红线：调用方只传**哈希后的 profile key**；不记 label / 邮箱 / 令牌——
 //! schema 上就不存在这些字段。文件仅存本机应用数据目录，best-effort 写入。
 //! 超过 1MB 时保留最新一半（按行），避免无限增长。
 
 use serde_json::Value;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 const AUDIT_FILE: &str = "audit.jsonl";
 const AUDIT_MAX_BYTES: u64 = 1_000_000;
+
+/// 追加与轮转之间必须串行：领取线程 + 自动检测线程可能同时写同一个文件。
+static AUDIT_LOCK: Mutex<()> = Mutex::new(());
 
 pub fn audit_path(app_data: &Path) -> PathBuf {
     app_data.join(AUDIT_FILE)
@@ -17,6 +21,7 @@ pub fn audit_path(app_data: &Path) -> PathBuf {
 
 /// 单条落盘。`entry` 期望形如 `{"ts","event","key","detail"}`（见 tests 的 schema 断言）。
 pub fn audit_append(path: &Path, entry: &Value) -> Result<(), String> {
+    let _guard = AUDIT_LOCK.lock().map_err(|_| "audit lock poisoned".to_string())?;
     if let Some(p) = path.parent() {
         std::fs::create_dir_all(p).map_err(|e| e.to_string())?;
     }

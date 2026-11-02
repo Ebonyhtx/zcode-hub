@@ -7,6 +7,7 @@ edition = "2021"
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-notification = "2"
 tauri-plugin-updater = "2"
+tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 aes-gcm = "0.10"
@@ -24,3 +25,11 @@ zeroize = "1"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+
+# 发布体积：thin LTO + 单 codegen 单元 + 体积优先 + strip 符号
+# （安装包与差分更新流量显著下降；不启用 panic=abort，保留测试/插件生态的 unwind 能力）
+[profile.release]
+lto = "thin"
+codegen-units = 1
+opt-level = "s"
+strip = true

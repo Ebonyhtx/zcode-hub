@@ -6,7 +6,8 @@
 //! - 铁律：main.rs 不得再直接出现 CommandExt / ShellExecuteW / crypt32 等平台符号。
 
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 /// 无窗口启动修饰：Windows 用 CREATE_NO_WINDOW，其他平台原样返回
 fn no_window(cmd: &mut Command) -> &mut Command {
@@ -18,6 +19,40 @@ fn no_window(cmd: &mut Command) -> &mut Command {
     #[cfg(not(windows))]
     {
         cmd
+    }
+}
+
+/// 带超时的外部命令执行：超时直接 kill，绝不无限占住调用线程。
+/// 返回 None 表示启动失败或超时；Some(output) 时由调用方检查 status。
+fn output_with_timeout(cmd: &mut Command, secs: u64) -> Option<Output> {
+    let mut child = no_window(cmd.stdout(Stdio::piped()).stderr(Stdio::piped()))
+        .spawn().ok()?;
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return child.wait_with_output().ok(),
+            Ok(None) => {}
+            Err(_) => return None,
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    }
+}
+
+/// PowerShell 单引号字面量转义：`'` → `''`，防止用户名/路径里的引号闭合字符串。
+fn ps_quote(s: &str) -> String { s.replace('\'', "''") }
+
+/// 只允许交给系统 Shell 打开的 URL：https，或本机回环验证页。
+pub fn is_safe_open_url(url: &str) -> bool {
+    let Ok(u) = url::Url::parse(url) else { return false };
+    match u.scheme() {
+        "https" => u.host_str().is_some(),
+        "http" => matches!(u.host_str(), Some("127.0.0.1") | Some("localhost")),
+        _ => false,
     }
 }
 
@@ -61,38 +96,46 @@ pub fn dpapi_operate(plain: &[u8], protect: bool) -> Result<Vec<u8>, String> {
 
 // ---------------- 客户端进程管理 ----------------
 
-pub fn zcode_running() -> bool {
+/// 三态进程探测：Err = 探测本身失败（tasklist 不可用/权限/AV 拦截）。
+/// 调用方必须把 Err 当成「不能确认未运行」，绝不能等同于 false。
+pub fn zcode_running() -> Result<bool, String> {
     #[cfg(windows)]
     {
-        no_window(Command::new("tasklist").args(["/FI", "IMAGENAME eq ZCode.exe", "/NH"])).output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).contains("ZCode.exe")).unwrap_or(false)
+        let out = output_with_timeout(
+            Command::new("tasklist").args(["/FI", "IMAGENAME eq ZCode.exe", "/NH"]), 10)
+            .ok_or("无法执行 tasklist（可能被安全软件拦截）")?;
+        if !out.status.success() {
+            return Err(format!("tasklist 退出码 {:?}", out.status.code()));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).contains("ZCode.exe"))
     }
     #[cfg(not(windows))]
     {
-        false
+        Ok(false)
     }
 }
 
-pub fn kill_zcode_process() -> bool {
+/// 关闭客户端；Err = 无法确认进程状态（切换必须中止，不能在客户端运行时改凭据）。
+pub fn kill_zcode_process() -> Result<bool, String> {
     #[cfg(windows)]
     {
         // 先温和关闭（WM_CLOSE），不行再强制（/F），并轮询确认进程真正退出——
         // 只看 taskkill 是否执行成功不可靠（Electron 可能忽略关闭消息）
-        let _ = no_window(Command::new("taskkill").args(["/IM", "ZCode.exe", "/T"])).output();
+        let _ = output_with_timeout(Command::new("taskkill").args(["/IM", "ZCode.exe", "/T"]), 10);
         for _ in 0..8 {
-            if !zcode_running() { return true; }
-            std::thread::sleep(std::time::Duration::from_millis(300));
+            if !zcode_running()? { return Ok(true); }
+            std::thread::sleep(Duration::from_millis(300));
         }
-        let _ = no_window(Command::new("taskkill").args(["/IM", "ZCode.exe", "/T", "/F"])).output();
+        let _ = output_with_timeout(Command::new("taskkill").args(["/IM", "ZCode.exe", "/T", "/F"]), 10);
         for _ in 0..15 {
-            if !zcode_running() { return true; }
-            std::thread::sleep(std::time::Duration::from_millis(300));
+            if !zcode_running()? { return Ok(true); }
+            std::thread::sleep(Duration::from_millis(300));
         }
-        false
+        Ok(false)
     }
     #[cfg(not(windows))]
     {
-        false
+        Ok(false)
     }
 }
 
@@ -112,22 +155,25 @@ pub fn launch_zcode_process(exe: &str) -> bool {
 }
 
 /// 自动探测客户端安装路径。`user_path` 为设置里用户指定的路径（已验证存在）。
+/// 顺序：用户路径 → 常见安装位置（纯文件检查，最快） → PowerShell（只在必要时跑）。
 pub fn detect_zcode_exe(user_path: Option<&str>) -> Option<String> {
     #[cfg(windows)]
     {
         if let Some(p) = user_path { return Some(p.to_string()); }
-        no_window(Command::new("powershell").args(["-NoProfile", "-Command",
-            "Get-Process ZCode -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Path"]))
-            .output().ok()
-            .and_then(|o| { let s = String::from_utf8_lossy(&o.stdout).trim().to_string(); if s.is_empty() { None } else { Some(s) } })
-            .or_else(|| {
-                // 客户端未运行时按常见安装位置兜底
-                let mut cands = vec![r"C:\Program Files\ZCode\ZCode.exe".to_string()];
-                if let Ok(la) = std::env::var("LOCALAPPDATA") {
-                    cands.push(format!(r"{}\Programs\ZCode\ZCode.exe", la));
-                }
-                cands.into_iter().find(|c| std::path::Path::new(c).exists())
-            })
+        // 先问运行中的进程：自定义安装路径只有这里能发现（负结果有 5 分钟缓存）
+        if let Some(out) = output_with_timeout(Command::new("powershell").args(["-NoProfile", "-Command",
+            "Get-Process ZCode -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Path"]), 10) {
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !s.is_empty() { return Some(s); }
+        }
+        let mut cands = vec![r"C:\Program Files\ZCode\ZCode.exe".to_string()];
+        if let Ok(la) = std::env::var("LOCALAPPDATA") {
+            cands.push(format!(r"{}\Programs\ZCode\ZCode.exe", la));
+        }
+        if let Ok(pf) = std::env::var("PROGRAMFILES") {
+            cands.push(format!(r"{}\ZCode\ZCode.exe", pf));
+        }
+        cands.into_iter().find(|c| std::path::Path::new(c).exists())
     }
     #[cfg(not(windows))]
     {
@@ -136,15 +182,15 @@ pub fn detect_zcode_exe(user_path: Option<&str>) -> Option<String> {
     }
 }
 
-/// 客户端 exe 的 ProductVersion（PowerShell）
+/// 客户端 exe 的 ProductVersion（PowerShell，LiteralPath + 单引号转义 + 超时）
 pub fn exe_product_version(exe: &str) -> Option<String> {
     #[cfg(windows)]
     {
-        no_window(Command::new("powershell").args(["-NoProfile", "-Command",
-            &format!("(Get-Item -LiteralPath '{}').VersionInfo.ProductVersion", exe)]))
-            .output().ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .filter(|s| !s.is_empty())
+        let script = format!("(Get-Item -LiteralPath '{}').VersionInfo.ProductVersion", ps_quote(exe));
+        let out = output_with_timeout(Command::new("powershell").args(["-NoProfile", "-Command", &script]), 10)?;
+        if !out.status.success() { return None; }
+        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if s.is_empty() { None } else { Some(s) }
     }
     #[cfg(not(windows))]
     {
@@ -166,9 +212,22 @@ pub fn open_dir_explorer(dir: &std::path::Path) {
     }
 }
 
+/// 在资源管理器中选中文件（导出备份后「打开所在文件夹」）
+pub fn reveal_in_explorer(file: &std::path::Path) {
+    #[cfg(windows)]
+    {
+        let _ = no_window(Command::new("explorer").arg(format!("/select,{}", file.display()))).spawn();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = file;
+    }
+}
+
 pub fn open_in_browser(url: &str) {
     #[cfg(windows)]
     {
+        if !is_safe_open_url(url) { return; }
         use std::os::windows::ffi::OsStrExt;
         #[link(name = "shell32")]
         extern "system" {
@@ -224,9 +283,10 @@ pub fn set_autostart_internal(enable: bool) -> Result<(), String> {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         let script = format!(
             "$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{}');$s.TargetPath='{}';$s.WorkingDirectory='{}';$s.Save()",
-            lnk.display(), exe.display(), exe.parent().map(|p| p.display().to_string()).unwrap_or_default());
-        let out = no_window(Command::new("powershell").args(["-NoProfile", "-Command", &script]))
-            .output().map_err(|e| e.to_string())?;
+            ps_quote(&lnk.display().to_string()), ps_quote(&exe.display().to_string()),
+            ps_quote(&exe.parent().map(|p| p.display().to_string()).unwrap_or_default()));
+        let out = output_with_timeout(Command::new("powershell").args(["-NoProfile", "-Command", &script]), 15)
+            .ok_or("创建自启快捷方式失败（PowerShell 超时或不可用）")?;
         if !out.status.success() { return Err("创建自启快捷方式失败".into()); }
         Ok(())
     }
@@ -254,7 +314,7 @@ pub fn client_timezone() -> String {
     {
         static CACHE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
         CACHE.get_or_init(|| {
-            let out = no_window(Command::new("tzutil").args(["/g"])).output().ok();
+            let out = output_with_timeout(Command::new("tzutil").args(["/g"]), 5);
             let name = out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
             match name.as_str() {
                 "China Standard Time" | "China Daylight Time" => "Asia/Shanghai",
@@ -277,9 +337,9 @@ pub fn os_version() -> Option<String> {
     {
         static CACHE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
         CACHE.get_or_init(|| {
-            let out = no_window(Command::new("reg").args([
+            let out = output_with_timeout(Command::new("reg").args([
                 "query", r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion", "/v", "CurrentBuildNumber",
-            ])).output().ok()?;
+            ]), 5)?;
             let txt = String::from_utf8_lossy(&out.stdout);
             let build = txt.lines().find(|l| l.contains("CurrentBuildNumber"))?
                 .split_whitespace().last()?.to_string();

@@ -1,17 +1,52 @@
-//! 本地额度历史（`quota-history/<key>.jsonl`）与燃尽率预测。
+//! 本地额度历史（`quota-history/<hash>.jsonl`）与燃尽率预测。
 //!
-//! 隐私：只含量子数字与套餐/模型标识，不含任何令牌或账号信息（key 即文件名）。
-//! 采样节流：同账号 10 分钟内不重复记录；保留 30 天，写入时顺带裁剪。
-//! 预测口径：线性外推——首尾样本消耗速率恒定时还能用几天；未消耗/回填期不预测。
+//! 隐私：只含额度数字与套餐/模型标识；文件名是账号 key 的 SHA-256 前 16 位，
+//! 不把邮箱/昵称写进文件名。采样节流：同账号 10 分钟内不重复记录。
+//! 存储：正常路径为纯追加（O(1)），仅当文件超过 2MB 或距上次样本超过 30 天时
+//! 才做一次裁剪重写。预测口径：线性外推首尾样本。
 
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::path::Path;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 pub const SAMPLE_MIN_GAP_SECS: i64 = 600;
 pub const RETENTION_SECS: i64 = 30 * 86400;
 /// 预测所需最短观察窗口（小时）——短于此值噪声过大
 pub const MIN_WINDOW_HOURS: f64 = 2.0;
+/// 超过该体积才做全量裁剪，避免每次采样都重写文件
+const COMPACT_MAX_BYTES: u64 = 2 * 1024 * 1024;
+
+/// 账号 key → 不透明文件名（不可逆，避免邮箱/昵称落进文件系统）
+pub fn key_hash(key: &str) -> String {
+    let mut h = Sha256::new();
+    h.update(b"zcode-hub-history:");
+    h.update(key.as_bytes());
+    let d = h.finalize();
+    d.iter().take(8).map(|b| format!("{:02x}", b)).collect()
+}
+
+fn legacy_name(key: &str) -> String {
+    key.chars().map(|c| if c.is_alphanumeric() || "-_.@".contains(c) { c } else { '_' }).collect()
+}
+
+pub fn history_path(app_data: &Path, key: &str) -> PathBuf {
+    app_data.join("quota-history").join(format!("{}.jsonl", key_hash(key)))
+}
+
+/// 兼容旧版本以账号 key 直接命名的历史文件：首次访问时改名为哈希名。
+pub fn ensure_history_path(app_data: &Path, key: &str) -> PathBuf {
+    let p = history_path(app_data, key);
+    if !p.exists() {
+        let legacy = app_data.join("quota-history").join(format!("{}.jsonl", legacy_name(key)));
+        if legacy.exists() && legacy != p {
+            let _ = std::fs::rename(&legacy, &p);
+        }
+    }
+    p
+}
 
 /// 从 fetch_quota 的成功响应里提取最小化样本；无 balances 返回 None（错误响应不入库）
 pub fn sample_from_quota(resp: &Value, now: i64) -> Option<Value> {
@@ -33,10 +68,6 @@ pub fn sample_from_quota(resp: &Value, now: i64) -> Option<Value> {
     if out.is_empty() { None } else { Some(json!({"ts": now, "balances": out})) }
 }
 
-pub fn history_path(app_data: &Path, key: &str) -> std::path::PathBuf {
-    app_data.join("quota-history").join(format!("{}.jsonl", key))
-}
-
 /// 逐行解析历史；坏行容忍跳过
 pub fn load_history(path: &Path) -> Vec<(i64, Value)> {
     let Ok(content) = std::fs::read_to_string(path) else { return Vec::new() };
@@ -47,25 +78,81 @@ pub fn load_history(path: &Path) -> Vec<(i64, Value)> {
     }).collect()
 }
 
-/// 节流 + 裁剪 + 原子写入。节流命中时静默跳过（Ok）。
-pub fn append_sample(path: &Path, sample: &Value, now: i64) -> Result<(), String> {
-    if sample.get("ts").and_then(|v| v.as_i64()) != Some(now) { return Err("sample ts mismatch".into()); }
-    let existing = load_history(path);
-    if let Some((last_ts, _)) = existing.last() {
-        if now - last_ts < SAMPLE_MIN_GAP_SECS { return Ok(()); }
+type HistoryRows = Vec<(i64, Value)>;
+type HistoryCacheEntry = (u64, u64, HistoryRows);
+
+/// 历史解析缓存：mtime + size 不变时直接复用，避免每次刷新全量解析。
+/// 纯内存、进程内；文件被追加/裁剪后 mtime 变化会自动失效。
+static HISTORY_CACHE: Mutex<Option<HashMap<PathBuf, HistoryCacheEntry>>> = Mutex::new(None);
+
+pub fn load_history_cached(path: &Path) -> Vec<(i64, Value)> {
+    let meta = match std::fs::metadata(path) { Ok(m) => m, Err(_) => return Vec::new() };
+    let mtime = meta.modified().ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as u64).unwrap_or(0);
+    let len = meta.len();
+    {
+        let mut g = HISTORY_CACHE.lock().unwrap();
+        let cache = g.get_or_insert_with(HashMap::new);
+        if let Some((m, l, rows)) = cache.get(path) {
+            if *m == mtime && *l == len { return rows.clone(); }
+        }
     }
-    let mut body = String::new();
-    for (_, v) in existing.iter().filter(|(ts, _)| now - ts <= RETENTION_SECS) {
-        body += &format!("{}\n", v);
-    }
-    body += &format!("{}\n", sample);
+    let rows = load_history(path);
+    HISTORY_CACHE.lock().unwrap().get_or_insert_with(HashMap::new)
+        .insert(path.to_path_buf(), (mtime, len, rows.clone()));
+    rows
+}
+
+/// 只读文件尾部最后一条合法样本的 ts（避免每次采样都全量解析）
+fn last_sample_ts(path: &Path) -> Option<i64> {
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let start = len.saturating_sub(8192);
+    f.seek(SeekFrom::Start(start)).ok()?;
+    let mut buf = String::new();
+    f.read_to_string(&mut buf).ok()?;
+    buf.lines().rev().find_map(|l| {
+        serde_json::from_str::<Value>(l).ok()?.get("ts")?.as_i64()
+    })
+}
+
+fn atomic_write(path: &Path, body: &str) -> Result<(), String> {
     if let Some(p) = path.parent() { std::fs::create_dir_all(p).map_err(|e| e.to_string())?; }
-    let tmp = path.with_extension("hub-tmp");
+    let tmp = path.with_extension(format!("hub-tmp-{}-{}", std::process::id(), rand::random::<u32>()));
     std::fs::write(&tmp, body).map_err(|e| e.to_string())?;
     match std::fs::rename(&tmp, path) {
         Ok(()) => Ok(()),
         Err(e) => { let _ = std::fs::remove_file(&tmp); Err(e.to_string()) }
     }
+}
+
+/// 追加样本：尾部节流；仅在体积/保留期需要时裁剪。返回是否真正写入。
+pub fn append_sample(path: &Path, sample: &Value, now: i64) -> Result<bool, String> {
+    if sample.get("ts").and_then(|v| v.as_i64()) != Some(now) { return Err("sample ts mismatch".into()); }
+    let last = last_sample_ts(path);
+    if let Some(last_ts) = last {
+        if now - last_ts < SAMPLE_MIN_GAP_SECS { return Ok(false); }
+    }
+    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let need_compact = size > COMPACT_MAX_BYTES
+        || last.map(|t| now - t > RETENTION_SECS).unwrap_or(false);
+    let line = format!("{}\n", serde_json::to_string(sample).map_err(|e| e.to_string())?);
+    if need_compact {
+        let mut body = String::new();
+        for (_, v) in load_history(path).iter().filter(|(ts, _)| now - ts <= RETENTION_SECS) {
+            body += &format!("{}\n", v);
+        }
+        body += &line;
+        atomic_write(path, &body)?;
+        return Ok(true);
+    }
+    if let Some(p) = path.parent() { std::fs::create_dir_all(p).map_err(|e| e.to_string())?; }
+    use std::io::Write as _;
+    std::fs::OpenOptions::new().create(true).append(true).open(path)
+        .map_err(|e| e.to_string())?
+        .write_all(line.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 /// 燃尽率预测：按 (plan_id, model) 分组线性外推。返回 `[{plan_id, model, days_left}]`。
@@ -107,6 +194,13 @@ mod tests {
         json!({"ok": true, "data": {"data": {"balances": balances}}})
     }
 
+    fn tmp_dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("zhb-hist-{}-{}-{}", tag, std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos()));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
+
     #[test]
     fn sample_extracts_minimal_fields_with_fallbacks() {
         let r = quota_response(json!([
@@ -126,21 +220,48 @@ mod tests {
 
     #[test]
     fn append_throttles_and_prunes() {
-        let dir = std::env::temp_dir().join(format!("zhb-hist-{}-{}", std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos()));
-        let p = history_path(&dir, "k1");
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = tmp_dir("append");
+        let p = history_path(&dir, "user@example.com");
         let mk = |ts: i64| json!({"ts": ts, "balances": [{"plan_id": "p", "model": "m", "available": 1.0, "total": 2.0, "expires_at": null}]});
-        append_sample(&p, &mk(1000), 1000).unwrap();
-        append_sample(&p, &mk(1001), 1001).unwrap(); // 间隔不足 → 跳过
+        assert!(append_sample(&p, &mk(1000), 1000).unwrap());
+        assert!(!append_sample(&p, &mk(1001), 1001).unwrap()); // 间隔不足 → 跳过
         assert_eq!(load_history(&p).len(), 1);
-        append_sample(&p, &mk(1000 + SAMPLE_MIN_GAP_SECS), 1000 + SAMPLE_MIN_GAP_SECS).unwrap();
+        assert!(append_sample(&p, &mk(1000 + SAMPLE_MIN_GAP_SECS), 1000 + SAMPLE_MIN_GAP_SECS).unwrap());
         assert_eq!(load_history(&p).len(), 2);
         // 老样本被裁剪：写入 31 天后的样本，只有 30 天内的留下
         append_sample(&p, &mk(1000 + RETENTION_SECS + 86400), 1000 + RETENTION_SECS + 86400).unwrap();
         let kept = load_history(&p);
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].0, 1000 + RETENTION_SECS + 86400);
+        // 文件名不含邮箱
+        let name = p.file_name().unwrap().to_string_lossy().to_string();
+        assert!(!name.contains("user"), "历史文件名必须脱敏: {}", name);
+        assert!(!name.contains("example.com"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cached_history_invalidates_after_append() {
+        let dir = tmp_dir("cache");
+        let p = history_path(&dir, "k");
+        let mk = |ts: i64| json!({"ts": ts, "balances": [{"plan_id": "p", "model": "m", "available": 1.0, "total": 2.0}]});
+        append_sample(&p, &mk(1000), 1000).unwrap();
+        assert_eq!(load_history_cached(&p).len(), 1);
+        append_sample(&p, &mk(1000 + SAMPLE_MIN_GAP_SECS), 1000 + SAMPLE_MIN_GAP_SECS).unwrap();
+        assert_eq!(load_history_cached(&p).len(), 2, "file size 变化后缓存必须失效");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn legacy_history_is_migrated() {
+        let dir = tmp_dir("legacy");
+        let legacy = dir.join("quota-history").join("user@example.com.jsonl");
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        std::fs::write(&legacy, "{\"ts\":1000,\"balances\":[]}\n").unwrap();
+        let p = ensure_history_path(&dir, "user@example.com");
+        assert!(p.exists());
+        assert!(!legacy.exists());
+        assert_eq!(load_history(&p).len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

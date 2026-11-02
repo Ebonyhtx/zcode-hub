@@ -34,7 +34,16 @@ pub type DecryptFn<'a> = dyn Fn(&str) -> Option<String> + 'a;
 /// 账号标签回退链：user_info(username/displayName/name/nickname/email) →
 /// JWT claims(name/email/sub) → active_provider → 占位文案。
 pub fn account_label_with(creds: &Value, decrypt: &DecryptFn) -> String {
-    for uk in FIELD_USER_INFO_KEYS {
+    // 优先读 active_provider 对应的 user_info：凭据里可能同时残留其他家族字段，
+    // 固定按 zai→bigmodel 顺序会显示成上一个账号。
+    let mut order: Vec<String> = Vec::new();
+    if let Some(p) = active_provider_with(creds, decrypt) {
+        order.push(oauth_field(&p, "user_info"));
+    }
+    for k in FIELD_USER_INFO_KEYS {
+        if !order.iter().any(|x| x == k) { order.push(k.to_string()); }
+    }
+    for uk in &order {
         if let Some(raw) = creds.get(uk).and_then(|v| v.as_str()) {
             if let Some(plain) = decrypt(raw) {
                 if let Ok(info) = serde_json::from_str::<Value>(&plain) {
@@ -67,6 +76,14 @@ pub fn account_label_with(creds: &Value, decrypt: &DecryptFn) -> String {
         Some(ap) => ap.to_string(),
         _ => "(未知)".into(),
     }
+}
+
+/// 当前激活 provider（解不开 / 非字符串返回 None）
+pub fn active_provider_with(creds: &Value, decrypt: &DecryptFn) -> Option<String> {
+    creds.get(FIELD_ACTIVE_PROVIDER).and_then(|v| v.as_str())
+        .and_then(decrypt)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// 从明文 JWT 载荷解析 exp（秒）；无 exp / 无法解码返回 None
@@ -211,7 +228,8 @@ impl FormatProbe {
 pub fn probe_credentials(creds: Option<&Value>) -> FormatProbe {
     let mut p = FormatProbe::default();
     let Some(c) = creds else {
-        p.errors.push("credentials.json 缺失或无法解析".into());
+        // 缺失是「未登录 / 未安装」的常态，不是格式异常；否则首次启动会被误报成兼容性故障
+        p.notes.push("credentials.json 不存在（尚未登录 ZCode 客户端）".into());
         return p;
     };
     let Some(obj) = c.as_object() else {
@@ -242,10 +260,19 @@ pub fn probe_setting(setting: Option<&Value>) -> FormatProbe {
     p
 }
 
-/// 兼容降级：仅替换 `zcodejwttoken`，其余字段一律不动。
-/// 存档里 token 的 enc:v1 密文本机可解（字段密钥与客户端同源派生），无需解密再加密。
-/// 当前凭据结构异常 / 源无有效 token 时拒绝执行。
-pub fn merge_token_only(live: &mut Value, source: &Value) -> Result<(), String> {
+/// 安全模式合并：把目标账号的「身份字段」写入现有凭据，保留未知/未来字段。
+///
+/// 旧实现只替换 `zcodejwttoken`，会留下「新 token + 旧 user_info / 旧 active_provider」的
+/// 混合身份：服务端看到的是 A 的身份、B 的令牌，界面还可能提示切换成功。这里改为：
+/// - 必换：`zcodejwttoken`、`oauth:active_provider`
+/// - 同目标 provider 的 access_token / refresh_token / user_info 一并替换（存在才写）
+/// - 其余字段（含客户端未来新增的未知字段）一律保留
+///
+/// 调用方必须先解密并校验 provider 属于已知家族，再写前备份、写后按 token 指纹校验。
+pub fn merge_account_fields(live: &mut Value, source: &Value, provider: &str) -> Result<(), String> {
+    if provider != PROVIDER_ZAI && provider != PROVIDER_BIGMODEL {
+        return Err("未知账号家族，拒绝安全模式合并".into());
+    }
     let tok = source.get(FIELD_TOKEN).and_then(|v| v.as_str())
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
@@ -253,7 +280,26 @@ pub fn merge_token_only(live: &mut Value, source: &Value) -> Result<(), String> 
     if !live.is_object() {
         return Err("当前凭据结构异常，拒绝合并——请手动备份后重试".into());
     }
-    live[FIELD_TOKEN] = json!(tok);
+    let ap = source.get(FIELD_ACTIVE_PROVIDER).and_then(|v| v.as_str())
+        .map(|s| s.trim()).filter(|s| !s.is_empty())
+        .ok_or("源存档缺少 active_provider")?;
+    {
+        let obj = live.as_object_mut().ok_or("当前凭据结构异常，拒绝合并——请手动备份后重试")?;
+        // 先清掉两个已知家族的账号字段：避免源缺 refresh_token 时残留旧账号的令牌；
+        // 非目标家族的字段也一并移除（当前账号已在切换前保鲜回存档）。
+        // 未知/未来字段不在这个循环里，保持原样。
+        for p in [PROVIDER_ZAI, PROVIDER_BIGMODEL] {
+            for kind in ["access_token", "refresh_token", "user_info"] {
+                obj.remove(&oauth_field(p, kind));
+            }
+        }
+        obj.insert(FIELD_TOKEN.into(), json!(tok));
+        obj.insert(FIELD_ACTIVE_PROVIDER.into(), json!(ap));
+        for kind in ["access_token", "refresh_token", "user_info"] {
+            let key = oauth_field(provider, kind);
+            if let Some(v) = source.get(&key) { obj.insert(key, v.clone()); }
+        }
+    }
     Ok(())
 }
 
@@ -267,8 +313,9 @@ pub fn read_json(path: &Path) -> Result<Value, String> {
 pub fn write_json(path: &Path, v: &Value) -> Result<(), String> {
     if let Some(p) = path.parent() { std::fs::create_dir_all(p).map_err(|e| e.to_string())?; }
     let body = serde_json::to_string_pretty(v).map_err(|e| e.to_string())?;
-    // 原子写：临时文件 + rename，进程被杀也不会留下半截 JSON
-    let tmp = path.with_extension("hub-tmp");
+    // 原子写：临时文件 + rename，进程被杀也不会留下半截 JSON。
+    // 临时名带随机后缀：同一文件并发写（自动检测线程 + 手动操作）不会互相踩。
+    let tmp = path.with_extension(format!("hub-tmp-{}-{}", std::process::id(), rand::random::<u32>()));
     std::fs::write(&tmp, body).map_err(|e| e.to_string())?;
     match std::fs::rename(&tmp, path) {
         Ok(()) => Ok(()),
@@ -346,6 +393,18 @@ mod tests {
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(s.as_bytes())
     }
     fn make_jwt(claims: &str) -> String { format!("h.{}.s", b64url(claims)) }
+
+    #[test]
+    fn label_prefers_active_provider_over_other_family() {
+        // 凭据里可能残留两个家族的 user_info；必须按 active_provider 选，不能固定 zai 优先
+        let mut c = zai_creds();
+        c["oauth:bigmodel:user_info"] = json!(enc_fixture(
+            r#"{"id":"u-2","username":"bm-user","displayName":"BM 用户"}"#));
+        c[FIELD_ACTIVE_PROVIDER] = json!(enc_fixture(PROVIDER_BIGMODEL));
+        assert_eq!(account_label_with(&c, &fake_decrypt), "bm-user");
+        c[FIELD_ACTIVE_PROVIDER] = json!(enc_fixture(PROVIDER_ZAI));
+        assert_eq!(account_label_with(&c, &fake_decrypt), "demo-user");
+    }
 
     #[test]
     fn jwt_expired_handles_enc_plain_and_tolerance() {
@@ -446,8 +505,10 @@ mod tests {
         let p = probe_credentials(Some(&no_token));
         assert!(!p.ok());
         assert!(p.errors.iter().any(|e| e.contains(FIELD_TOKEN)));
-        // 文件缺失 → error
-        assert!(!probe_credentials(None).ok());
+        // 文件缺失 → 未登录常态，只记 note，不报格式错误
+        let missing = probe_credentials(None);
+        assert!(missing.ok());
+        assert!(missing.notes.iter().any(|n| n.contains("尚未登录")));
         // 顶层非对象 → error
         assert!(!probe_credentials(Some(&json!("junk"))).ok());
         // 空对象：token 缺失 → error（空 token 也不合格）
@@ -462,24 +523,42 @@ mod tests {
     }
 
     #[test]
-    fn merge_token_only_touches_nothing_else() {
-        let source = expired_creds(); // 含 zcodejwttoken
+    fn merge_account_fields_replaces_identity_and_keeps_unknown() {
+        let source = zai_creds(); // 含 token / active_provider / oauth:zai:*
         let mut live = json!({
             FIELD_TOKEN: "enc:v1:old.token.value",
-            "oauth:active_provider": "enc:v1:provider-blob",
+            FIELD_ACTIVE_PROVIDER: "enc:v1:old-provider-blob",
+            "oauth:zai:access_token": "enc:v1:old-access",
+            "oauth:zai:user_info": "enc:v1:old-user",
+            "oauth:bigmodel:access_token": "enc:v1:other-provider",
             "unknown_future_field": {"keep": true},
             "other": "preserved"
         });
-        assert!(merge_token_only(&mut live, &source).is_ok());
+        assert!(merge_account_fields(&mut live, &source, PROVIDER_ZAI).is_ok());
         assert_ne!(live[FIELD_TOKEN], json!("enc:v1:old.token.value"), "token 必须被替换");
-        assert_eq!(live["other"], json!("preserved"), "其余字段必须原样保留");
+        assert_eq!(live[FIELD_ACTIVE_PROVIDER], source[FIELD_ACTIVE_PROVIDER], "provider 必须跟随目标账号");
+        assert_eq!(live["oauth:zai:access_token"], source["oauth:zai:access_token"]);
+        assert_eq!(live["oauth:zai:user_info"], source["oauth:zai:user_info"]);
+        assert_eq!(live["other"], json!("preserved"), "未知字段必须保留");
         assert_eq!(live["unknown_future_field"]["keep"], json!(true));
-        assert_eq!(live[FIELD_ACTIVE_PROVIDER], json!("enc:v1:provider-blob"), "除 token 外不得改写");
-        // 源无有效 token → 拒绝
-        assert!(merge_token_only(&mut live, &json!({})).is_err());
+        assert!(live.get("oauth:bigmodel:access_token").is_none(), "旧家族账号字段必须移除");
+        assert_eq!(live["oauth:zai:refresh_token"], source["oauth:zai:refresh_token"]);
+        // 源无有效 token / 缺 provider / 未知家族 → 拒绝
+        assert!(merge_account_fields(&mut live, &json!({}), PROVIDER_ZAI).is_err());
+        let mut no_provider = source.clone();
+        no_provider.as_object_mut().unwrap().remove(FIELD_ACTIVE_PROVIDER);
+        assert!(merge_account_fields(&mut live, &no_provider, PROVIDER_ZAI).is_err());
+        assert!(merge_account_fields(&mut live, &source, "openai").is_err());
         // live 结构异常 → 拒绝
         let mut junk = json!("not-object");
-        assert!(merge_token_only(&mut junk, &source).is_err());
+        assert!(merge_account_fields(&mut junk, &source, PROVIDER_ZAI).is_err());
+    }
+
+    #[test]
+    fn identity_helpers_read_provider() {
+        let c = zai_creds();
+        assert_eq!(active_provider_with(&c, &fake_decrypt), Some(PROVIDER_ZAI.to_string()));
+        assert_eq!(active_provider_with(&json!({}), &fake_decrypt), None);
     }
 
     #[test]

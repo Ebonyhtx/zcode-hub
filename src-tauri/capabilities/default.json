@@ -4,6 +4,7 @@
   "permissions": [
     "core:default",
     "notification:default",
+    "dialog:default",
     "updater:default"
   ]
 }
