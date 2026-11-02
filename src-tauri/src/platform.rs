@@ -237,6 +237,15 @@ pub fn set_autostart_internal(enable: bool) -> Result<(), String> {
     }
 }
 
+/// 系统提示音（Windows：MessageBeep 系统通知音；其他平台无操作）
+pub fn beep() {
+    #[cfg(windows)]
+    {
+        extern "system" { fn MessageBeep(u_type: u32) -> i32; }
+        unsafe { MessageBeep(0xFFFF_FFFF); } // MB_OK → 系统默认音
+    }
+}
+
 // ---------------- 系统信息（活动事件上报 / 验证码页用） ----------------
 
 /// IANA 时区名（事件上报字段）；未知返回 "unknown"

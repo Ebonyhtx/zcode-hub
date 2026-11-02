@@ -44,7 +44,10 @@ fn sanitize_label(s: &str) -> String {
 // ---------------- 窗口几何持久化 ----------------
 fn save_window_state(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
+        // 最小化时 outer_position 是 -32000 哨兵、尺寸是 160x28 —— 存下去会导致下次启动窗口跑到屏幕外
+        if w.is_minimized().unwrap_or(false) { return; }
         if let (Ok(pos), Ok(size)) = (w.outer_position(), w.outer_size()) {
+            if pos.x <= -10000 || pos.y <= -10000 || size.width < 400 || size.height < 400 { return; }
             let mut s = load_settings();
             s["window"] = json!({"x": pos.x, "y": pos.y, "w": size.width, "h": size.height, "max": w.is_maximized().unwrap_or(false)});
             let _ = write_json(&config_path(), &s);
@@ -56,18 +59,26 @@ fn save_window_state(app: &tauri::AppHandle) {
 fn restore_window_state(app: &tauri::App) {
     if let Some(w) = app.get_webview_window("main") {
         let cfg = load_settings();
+        let mut applied = false;
         if let Some(win) = cfg.get("window") {
             let max = win.get("max").and_then(|v| v.as_bool()).unwrap_or(false);
             if max {
                 let _ = w.maximize();
+                applied = true;
             } else if let (Some(x), Some(y), Some(ww), Some(hh)) = (
                 win.get("x").and_then(|v| v.as_i64()), win.get("y").and_then(|v| v.as_i64()),
                 win.get("w").and_then(|v| v.as_u64()), win.get("h").and_then(|v| v.as_u64())) {
-                use tauri::{PhysicalPosition, PhysicalSize};
-                let _ = w.set_position(PhysicalPosition::new(x as i32, y as i32));
-                let _ = w.set_size(PhysicalSize::new(ww as u32, hh as u32));
+                // 有效性校验：排除最小化哨兵（-32000）与过小/越界几何，坏数据直接丢弃并居中
+                let sane = x > -10000 && y > -10000 && x < 16384 && y < 16384 && ww >= 400 && hh >= 400;
+                if sane {
+                    use tauri::{PhysicalPosition, PhysicalSize};
+                    let _ = w.set_position(PhysicalPosition::new(x as i32, y as i32));
+                    let _ = w.set_size(PhysicalSize::new(ww as u32, hh as u32));
+                    applied = true;
+                }
             }
         }
+        if !applied { let _ = w.center(); }
         let _ = w.show();
         let _ = w.set_focus();
     }
@@ -1450,6 +1461,7 @@ fn _check_all_and_notify(app: &tauri::AppHandle) {
     }
     *LAST_CHECK.lock().unwrap() = Some(chrono::Utc::now().timestamp());
     if total > 0 && load_settings().get("notify_enabled").and_then(|v| v.as_bool()).unwrap_or(true) {
+        platform::beep(); // 系统提示音：窗口隐藏到托盘时也能听到
         use tauri_plugin_notification::NotificationExt;
         let _ = app.notification().builder()
             .title("ZCode Hub 福利提醒")
