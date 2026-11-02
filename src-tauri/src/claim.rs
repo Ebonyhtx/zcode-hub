@@ -143,6 +143,8 @@ pub fn preview_plans(
         .header("X-Platform", "win32-x64")
         .header("X-Os-Category", "windows")
         .header("X-Client-Language", "zh-CN")
+        .header("X-Client-Timezone", crate::platform::client_timezone())
+        .header("X-Release-Channel", "stable")
         .header("HTTP-Referer", "https://zcode.z.ai")
         .header("x-request-id", uuid::Uuid::new_v4().to_string())
         .timeout(Duration::from_secs(30));
@@ -160,6 +162,8 @@ pub fn fetch_captcha_config(client: &reqwest::blocking::Client, app_version: &st
         .header("X-Platform", "win32-x64")
         .header("X-Os-Category", "windows")
         .header("X-Client-Language", "zh-CN")
+        .header("X-Client-Timezone", crate::platform::client_timezone())
+        .header("X-Release-Channel", "stable")
         .timeout(Duration::from_secs(20))
         .send().map_err(|e| e.to_string())?
         .json().map_err(|e| e.to_string())?;
@@ -189,6 +193,8 @@ pub fn submit_claim(
         .header("X-Platform", "win32-x64")
         .header("X-Os-Category", "windows")
         .header("X-Client-Language", "zh-CN")
+        .header("X-Client-Timezone", crate::platform::client_timezone())
+        .header("X-Release-Channel", "stable")
         .header("HTTP-Referer", "https://zcode.z.ai")
         .header("x-request-id", uuid::Uuid::new_v4().to_string())
         .timeout(Duration::from_secs(25));
@@ -414,6 +420,26 @@ mod tests {
         ]}})).unwrap();
         assert_eq!(plans.len(), 1);
         assert_eq!(plans[0]["plan_id"], json!("p1"));
+    }
+
+    #[test]
+    fn captcha_loopback_serves_page_and_receives_result() {
+        let cfg = json!({"enabled": true, "sceneId": "scene-test", "prefix": "px", "region": "cn"});
+        let flow = start_captcha_flow(&cfg).expect("flow start");
+        let url = flow.url.clone();
+        let client = reqwest::blocking::Client::new();
+        // 页面可访问且包含 SDK 与 nonce
+        let page = client.get(&url).send().expect("GET page").text().expect("page text");
+        assert!(page.contains("AliyunCaptcha.js"));
+        assert!(page.contains("scene-test"));
+        // 页面把验证参数 POST 回来 → 主流程应收到
+        let result_url = format!("{}/result", url.trim_end_matches('/'));
+        let r = client.post(&result_url).json(&json!({"param": "p123", "region": "cn"}))
+            .send().expect("POST result");
+        assert!(r.status().is_success());
+        let got = wait_captcha(flow).expect("receive param");
+        assert_eq!(got["param"], json!("p123"));
+        assert_eq!(got["region"], json!("cn"));
     }
 
     #[test]
