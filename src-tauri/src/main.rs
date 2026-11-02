@@ -1243,12 +1243,22 @@ fn _benefits_key_result(key: &str) -> Value {
     let ver = client_app_version();
     // 检测解锁：以用户本人账号上报 app_launch / app_daily_active（与客户端启动行为一致，30 分钟节流）
     if let Some(creds) = cred_for_key(key) { maybe_report_events(key, &creds, &mid, &ver); }
-    match claim::preview_plans(http(), &token, &mid, &ver) {
-        Ok(plans) => {
+    // 主数据源：marketing/touch（客户端左下角领取横幅同源）；preview 作为兜底（可能返回其他活动）
+    let marketing = claim::marketing_claim_plans(http(), &token, &mid, &ver);
+    let preview = claim::preview_plans(http(), &token, &mid, &ver);
+    match (&marketing, &preview) {
+        (Err(me), Err(pe)) => json!({"ok": false, "transient": pe.transient,
+            "error": format!("{} / {}", me, pe.msg), "count": 0, "campaigns": [], "checked_at": ts}),
+        _ => {
+            let mut plans: Vec<Value> = Vec::new();
+            if let Ok(p) = &marketing { plans.extend(p.iter().cloned()); }
+            if let Ok(p) = &preview { plans.extend(p.iter().cloned()); }
+            let mut seen = std::collections::HashSet::new();
+            plans.retain(|p| p.get("plan_id").and_then(|v| v.as_str())
+                .map(|k| seen.insert(k.to_string())).unwrap_or(false));
             let camps = campaigns_from_plans(&plans);
             json!({"ok": true, "count": camps.len(), "campaigns": camps, "checked_at": ts})
         }
-        Err(e) => json!({"ok": false, "transient": e.transient, "error": e.msg, "count": 0, "campaigns": [], "checked_at": ts}),
     }
 }
 

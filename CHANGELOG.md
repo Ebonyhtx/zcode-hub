@@ -3,6 +3,12 @@
 本文件记录 ZCode Hub 的显著变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.8.1] - 2026-11-02
+
+### 修复
+- **福利检测数据源纠正（关键）**：领取横幅的真实数据源是营销活动接口 `GET /api/v1/marketing/touch`（deliveries → banner 的 `claim_zcode_plan` 动作），此前一直查 `billing/preview`（当前服务端不再从该接口下发领取项）导致长期检测不到。现以 marketing/touch 为主数据源、preview 作兜底，按 plan_id 去重
+- 实测验证：第四个新账号能被正确识别（`count=1`，plan `zcode-v3-start-plan-1102`，3 亿 GLM-5.3-Flash），已领取的三个账号正确显示 0
+
 ## [1.8.0] - 2026-11-02
 
 ### 修复

@@ -17,6 +17,8 @@ pub const BILLING_PREVIEW_URL: &str = "https://zcode.z.ai/api/v1/zcode-plan/bill
 pub const BILLING_CLAIM_URL: &str = "https://zcode.z.ai/api/v1/zcode-plan/billing/claim";
 pub const CLIENT_CONFIGS_URL: &str = "https://zcode.z.ai/api/v1/client/configs";
 pub const ACTIVATION_EVENTS: [&str; 2] = ["app_launch", "app_daily_active"];
+/// 客户端左下角领取横幅的真实数据源（营销活动投放），不是 billing/preview
+pub const MARKETING_TOUCH_URL: &str = "https://zcode.z.ai/api/v1/marketing/touch";
 const SCREEN_RESOLUTION_FALLBACK: &str = "2560x1440";
 const CAPTCHA_TIMEOUT_SECS: u64 = 150;
 
@@ -102,6 +104,63 @@ pub fn report_activation_events(
         }
     }
     Ok(())
+}
+
+/// 解析 marketing/touch 响应（纯函数）：提取 deliveries 中 banner 的 claim_zcode_plan 动作。
+/// 输出与 preview plans 同构：{plan_id, name, entitlements[]}，便于统一渲染。
+pub fn marketing_claim_plans_from(j: &Value) -> Result<Vec<Value>, String> {
+    let code = j.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
+    if code != 0 {
+        let msg = j.get("msg").and_then(|m| m.as_str()).map(str::trim).filter(|s| !s.is_empty()).unwrap_or("marketing error");
+        return Err(msg.to_string());
+    }
+    let mut out: Vec<Value> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for d in j.pointer("/data/deliveries").and_then(|v| v.as_array()).cloned().unwrap_or_default() {
+        let claim_plan_id = d.pointer("/banner/buttons").and_then(|b| b.as_array()).and_then(|arr| {
+            arr.iter().find_map(|btn| {
+                if btn.pointer("/action/type").and_then(|t| t.as_str()) == Some("claim_zcode_plan") {
+                    btn.pointer("/action/args/plan_id").and_then(|p| p.as_str())
+                        .map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+                } else { None }
+            })
+        });
+        let Some(pid) = claim_plan_id else { continue };
+        if !seen.insert(pid.clone()) { continue; }
+        let plan = d.pointer("/banner/background/args/zcode_plan").cloned().unwrap_or(json!({}));
+        let name = plan.get("name").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty())
+            .unwrap_or(&pid).to_string();
+        let entitlements = plan.get("entitlements").cloned().unwrap_or(json!([]));
+        out.push(json!({"plan_id": pid, "name": name, "entitlements": entitlements}));
+    }
+    Ok(out)
+}
+
+/// GET marketing/touch（账号自己的 token + deviceMid），提取可领活动
+pub fn marketing_claim_plans(
+    client: &reqwest::blocking::Client,
+    token: &str,
+    mid: &str,
+    app_version: &str,
+) -> Result<Vec<Value>, String> {
+    let j: Value = client.get(MARKETING_TOUCH_URL)
+        .query(&[("locale", "zh-CN"), ("seq", "0")])
+        .header("Authorization", format!("Bearer {}", token))
+        .header("X-Device-Mid", mid)
+        .header("User-Agent", format!("ZCode/{}", app_version))
+        .header("X-ZCode-App-Version", app_version)
+        .header("X-Title", "Z Code@electron")
+        .header("X-Platform", "win32-x64")
+        .header("X-Os-Category", "windows")
+        .header("X-Client-Language", "zh-CN")
+        .header("X-Client-Timezone", crate::platform::client_timezone())
+        .header("X-Release-Channel", "stable")
+        .header("HTTP-Referer", "https://zcode.z.ai")
+        .header("x-request-id", uuid::Uuid::new_v4().to_string())
+        .timeout(Duration::from_secs(20))
+        .send().map_err(|e| e.to_string())?
+        .json().map_err(|e| e.to_string())?;
+    marketing_claim_plans_from(&j)
 }
 
 /// preview 请求错误：`transient` 区分「暂时性」（网络/限频/服务端故障，稍后重试）
@@ -397,6 +456,30 @@ mod tests {
         // effective_at=0 视为立即生效，不作为「最晚生效时间」
         let data0 = json!({"plan": {"entitlements": [{"effective_at": 0}, {"effective_at": 1793631600}]}});
         assert_eq!(claim_timing(&data0).0, Some(1793631600));
+    }
+
+    #[test]
+    fn marketing_claim_plans_extract_banner_action() {
+        let j = json!({"code": 0, "data": {"deliveries": [
+            {"campaign_id": "c1", "resource_position": "banner",
+             "banner": {"buttons": [
+                 {"action": {"type": "close"}},
+                 {"action": {"type": "claim_zcode_plan", "args": {"plan_id": "zcode-v3-start-plan-1102"}}}
+             ],
+             "background": {"args": {"zcode_plan": {"plan_id": "zcode-v3-start-plan-1102", "name": "ZCODE GLOBAL BUILD",
+                 "entitlements": [{"show_name": "GLM-5.3-Flash", "grant_units": 300000000, "unit_type": "token", "period": "one_time"}]}}}}}
+        ]}});
+        let plans = marketing_claim_plans_from(&j).unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0]["plan_id"], json!("zcode-v3-start-plan-1102"));
+        assert_eq!(plans[0]["name"], json!("ZCODE GLOBAL BUILD"));
+        assert_eq!(plans[0]["entitlements"].as_array().unwrap().len(), 1);
+        // 无 claim 动作 / 空 deliveries → 空
+        assert!(marketing_claim_plans_from(&json!({"code": 0, "data": {"deliveries": []}})).unwrap().is_empty());
+        assert!(marketing_claim_plans_from(&json!({"code": 0, "data": {"deliveries": [
+            {"banner": {"buttons": [{"action": {"type": "close"}}]}}]}})).unwrap().is_empty());
+        // 业务错误
+        assert!(marketing_claim_plans_from(&json!({"code": 500, "msg": "boom"})).is_err());
     }
 
     #[test]
