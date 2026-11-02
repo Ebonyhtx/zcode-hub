@@ -32,3 +32,8 @@ dist/
 
 # 本机交接文档（含凭据密码，永不入库）
 HANDOFF.md
+
+# Node / Playwright
+node_modules/
+test-results/
+playwright-report/
