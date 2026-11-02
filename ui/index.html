@@ -2,82 +2,231 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ZCode Hub</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body data-theme="light">
+<svg class="sprite" aria-hidden="true" focusable="false">
+  <symbol id="i-plus" viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></symbol>
+  <symbol id="i-save" viewBox="0 0 16 16"><path d="M3 2.5h8l2.5 2.5v8.5H3z"/><path d="M5.5 2.5v4h5v-4M5.5 13.5v-4h5v4"/></symbol>
+  <symbol id="i-archive" viewBox="0 0 16 16"><rect x="2.5" y="3" width="11" height="3" rx="1"/><path d="M3.5 6v7h9V6M6.5 8.5h3"/></symbol>
+  <symbol id="i-power" viewBox="0 0 16 16"><path d="M8 2v6"/><path d="M4.7 4.2a5 5 0 1 0 6.6 0"/></symbol>
+  <symbol id="i-search" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.2"/><path d="m10.3 10.3 3.2 3.2"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 16 16"><path d="M13 6a5.2 5.2 0 0 0-9-1.6L2.5 6"/><path d="M2.5 3.5V6H5"/><path d="M3 10a5.2 5.2 0 0 0 9 1.6L13.5 10"/><path d="M13.5 12.5V10H11"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 16 16"><path d="M13 9.8A5.4 5.4 0 0 1 6.2 3 5.6 5.6 0 1 0 13 9.8z"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.8"/><path d="M8 1.5v1.8M8 12.7v1.8M1.5 8h1.8M12.7 8h1.8M3.4 3.4l1.3 1.3M11.3 11.3l1.3 1.3M12.6 3.4l-1.3 1.3M4.7 11.3l-1.3 1.3"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 16 16"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"/><circle cx="6" cy="4.5" r="1.5"/><circle cx="10" cy="8" r="1.5"/><circle cx="5.5" cy="11.5" r="1.5"/></symbol>
+  <symbol id="i-min" viewBox="0 0 16 16"><path d="M3 8h10"/></symbol>
+  <symbol id="i-max" viewBox="0 0 16 16"><rect x="3" y="3" width="10" height="10" rx="1"/></symbol>
+  <symbol id="i-close" viewBox="0 0 16 16"><path d="m3.5 3.5 9 9M12.5 3.5l-9 9"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 16 16"><path d="m4.5 6.5 3.5 3.5 3.5-3.5"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 16 16"><path d="M3 4.5h10M6 4.5V3h4v1.5M4.5 4.5l.6 9h5.8l.6-9M6.8 7v4M9.2 7v4"/></symbol>
+  <symbol id="i-pencil" viewBox="0 0 16 16"><path d="m9.8 3.2 3 3L6 13H3v-3z"/><path d="m8.6 4.4 3 3"/></symbol>
+  <symbol id="i-gift" viewBox="0 0 16 16"><rect x="2.5" y="6" width="11" height="8" rx="1"/><path d="M2.5 9h11M8 6v8"/><path d="M8 6C6.5 6 4.8 5.6 4.8 4.1 4.8 3 5.7 2.4 6.5 2.8 7.6 3.3 8 4.8 8 6zM8 6c1.5 0 3.2-.4 3.2-1.9 0-1.1-.9-1.7-1.7-1.3C8.4 3.3 8 4.8 8 6z"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/><path d="M8 4.8V8l2.2 1.4"/></symbol>
+  <symbol id="i-external" viewBox="0 0 16 16"><path d="M9 3h4v4M13 3 7.5 8.5"/><path d="M11.5 9.5v3H3.5v-8H7"/></symbol>
+  <symbol id="i-check" viewBox="0 0 16 16"><path d="m3 8.5 3.2 3.2L13 5"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 16 16"><path d="M8 2.5 14 13H2z"/><path d="M8 6.2v3.2M8 11.4v.2"/></symbol>
+  <symbol id="i-info" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/><path d="M8 7.2v4M8 5v.2"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 16 16"><path d="M2 4.5h4.2l1.3 1.6H14v6.4H2z"/><path d="M2 7.6h12"/></symbol>
+  <symbol id="i-history" viewBox="0 0 16 16"><path d="M3 8a5 5 0 1 0 1.7-3.8L3 6"/><path d="M3 3v3h3M8 5.5V8l2 1.3"/></symbol>
+</svg>
+
 <div class="tbar">
   <span class="logo">ZCODE·HUB</span>
-  <span class="pill"><i class="dot" id="runDot"></i><span id="runText" data-i18n="checking"></span></span>
+  <span class="pill"><i class="dot" id="runDot"></i><span id="runText"></span></span>
+  <span class="tbar-count num" id="profCount"></span>
   <span class="tspacer"></span>
-  <button class="hbtn" id="themeBtn" title="Theme" data-action="theme">🌙</button>
-  <button class="hbtn" title="Settings / About" data-action="cfg">⚙</button>
-  <button class="wbtn" data-action="min"><svg viewBox="0 0 10 10"><path d="M0 5h10"/></svg></button>
-  <button class="wbtn" data-action="max"><svg viewBox="0 0 10 10"><rect x=".7" y=".7" width="8.6" height="8.6" rx="1"/></svg></button>
-  <button class="wbtn close" data-action="hide"><svg viewBox="0 0 10 10"><path d="M0 0l10 10M10 0L0 10"/></svg></button>
+  <button class="hbtn" id="themeBtn" data-action="theme" data-i18n-aria="theme" aria-label="Theme"><svg class="icon"><use href="#i-moon"/></svg></button>
+  <button class="hbtn" data-action="cfg" data-i18n-aria="settings" aria-label="Settings"><svg class="icon"><use href="#i-settings"/></svg></button>
+  <button class="wbtn" data-action="min" data-i18n-aria="minimize" aria-label="Minimize"><svg class="icon"><use href="#i-min"/></svg></button>
+  <button class="wbtn" data-action="max" data-i18n-aria="maximize" aria-label="Maximize"><svg class="icon"><use href="#i-max"/></svg></button>
+  <button class="wbtn close" data-action="hide" data-i18n-aria="close_window" aria-label="Close"><svg class="icon"><use href="#i-close"/></svg></button>
 </div>
+
 <div class="wrap">
   <div class="btnrow">
-    <button class="btn" data-action="capture" data-i18n="capture"></button>
-    <button class="btn" data-action="add" data-i18n="add"></button>
-    <button class="btn" data-action="bak" data-i18n="backup"></button>
-    <button class="btn warn" data-action="kill" data-i18n="kill"></button>
+    <button class="btn primary" data-action="add"><svg class="icon"><use href="#i-plus"/></svg><span data-i18n="add"></span></button>
+    <button class="btn" data-action="capture"><svg class="icon"><use href="#i-save"/></svg><span data-i18n="capture"></span></button>
+    <button class="btn ghost" data-action="bak"><svg class="icon"><use href="#i-archive"/></svg><span data-i18n="backup"></span></button>
   </div>
-  <div class="setcard"><div class="setrow">
-    <span class="lbl" data-i18n="auto_check"></span>
-    <select id="autoCheckSel">
-      <option value="0" data-i18n="off"></option>
-      <option value="5" data-i18n="min5"></option>
-      <option value="15" data-i18n="min15"></option>
-      <option value="30" data-i18n="min30"></option>
-      <option value="60" data-i18n="min60"></option>
+
+  <div class="setcard">
+    <div class="setrow">
+      <span class="lbl" data-i18n="auto_check"></span>
+      <select id="autoCheckSel">
+        <option value="0" data-i18n="off"></option>
+        <option value="5" data-i18n="min5"></option>
+        <option value="15" data-i18n="min15"></option>
+        <option value="30" data-i18n="min30"></option>
+        <option value="60" data-i18n="min60"></option>
+      </select>
+      <label class="tgl" title="Notify"><input type="checkbox" id="notifyTgl"><i></i><span class="sr-only" data-i18n="notify"></span></label>
+      <span class="mut num" id="lastCheckTxt"></span>
+      <span class="grow"></span>
+      <button class="chkbtn" id="chkBtn" data-action="checkall"><svg class="icon"><use href="#i-search"/></svg><span data-i18n="check_all"></span></button>
+      <button class="icon-btn" id="refreshBtn" data-action="refresh" data-i18n-aria="refresh" aria-label="Refresh"><svg class="icon"><use href="#i-refresh"/></svg></button>
+    </div>
+  </div>
+
+  <div class="compat" id="compatBar" role="status" hidden>
+    <svg class="icon"><use href="#i-alert"/></svg>
+    <span id="compatText"></span>
+    <button class="linkbtn" data-action="compat-details" data-i18n="details"></button>
+    <div class="compat-notes" id="compatNotes" hidden></div>
+  </div>
+
+  <div class="notice" id="noticeBar" role="status" hidden>
+    <span id="noticeText"></span>
+    <button class="linkbtn" id="noticeAction" data-action="notice-action" hidden></button>
+    <button class="icon-btn tiny" data-action="notice-close" data-i18n-aria="dismiss" aria-label="Dismiss"><svg class="icon"><use href="#i-close"/></svg></button>
+  </div>
+
+  <div class="sec">
+    <span class="t" data-i18n="accounts"></span><span class="c num" id="countTxt"></span>
+    <span class="grow"></span>
+    <select id="sortSel" class="mini-select" data-i18n-aria="sort">
+      <option value="current" data-i18n="sort_current"></option>
+      <option value="claimable" data-i18n="sort_claimable"></option>
+      <option value="expiry" data-i18n="sort_expiry"></option>
+      <option value="manual" data-i18n="sort_manual"></option>
     </select>
-    <span class="lbl" data-i18n="notify"></span>
-    <label class="tgl"><input type="checkbox" id="notifyTgl"><i></i></label>
-    <span class="mut num" id="lastCheckTxt"></span>
-    <button class="chkbtn" id="chkBtn" data-action="checkall" data-i18n="check_all"></button>
-  </div></div>
-  <div class="compat" id="compatBar" style="display:none"></div>
-  <div class="sec"><span class="t" data-i18n="accounts"></span><span class="c num" id="profCount"></span><span style="flex:1"></span><button class="secbtn" data-action="unfoldall" data-i18n="expand_all"></button><button class="secbtn" data-action="foldall" data-i18n="fold_all"></button></div>
-  <div id="acctList"><div class="empty"><div class="big">◈</div><p data-i18n="connecting"></p></div></div>
+    <button class="secbtn" data-action="unfoldall" data-i18n="expand_all"></button>
+    <button class="secbtn" data-action="foldall" data-i18n="fold_all"></button>
+  </div>
+
+  <div id="acctList" class="acct-list" aria-live="polite">
+    <div class="empty"><div class="spin"></div><p data-i18n="connecting"></p></div>
+  </div>
 </div>
-<div class="toasts" id="toasts"></div>
 
-<div class="overlay" id="addModal" style="display:none">
-<div class="mbox">
-  <h3 data-i18n="add_title"></h3><div class="sub" data-i18n="add_sub"></div>
-  <button class="prov" data-action="prov" data-provider="zai"><span class="chip zai">Z</span><span><span class="pn" data-i18n="zai_name"></span><br><span class="pd" data-i18n="zai_desc"></span></span></button>
-  <button class="prov" data-action="prov" data-provider="bigmodel"><span class="chip bm">M</span><span><span class="pn" data-i18n="bm_name"></span><br><span class="pd" data-i18n="bm_desc"></span></span></button>
-  <div class="mstatus" id="oauthStatus"></div>
-  <div class="mfoot"><button class="reopen" id="oauthReopen" data-action="oauth-reopen" data-i18n="reopen"></button><button class="cancel" data-action="add-cancel" data-i18n="cancel"></button></div>
-</div></div>
+<div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
 
-<div class="overlay" id="cfgModal" style="display:none">
-<div class="mbox" style="width:470px">
-  <h3 data-i18n="cfg_title"></h3>
-  <div class="cfgsec" data-i18n="about"></div>
-  <div style="font-size:12px;color:var(--mut);margin-bottom:8px">ZCode Hub <b id="cfgVer" class="num" style="color:var(--tx)"></b><span data-i18n="about_line"></span> · <span class="num" id="zcodeVer"></span></div>
-  <div class="mline"><button class="camp-btn" data-action="cfg-checkupdate" data-i18n="check_upd"></button><button class="camp-btn" data-action="open-repo" data-url="https://github.com/Ebonyhtx/zcode-hub" data-i18n="repo"></button><span class="mut" id="updTxt"></span></div>
-  <div class="cfgsec" data-i18n="zcode_sec"></div>
-  <div class="mline"><span class="mlbl" data-i18n="client_path"></span><input id="zcPath" type="text" class="min wide" data-i18n-ph="path_ph"><button class="camp-btn" data-action="cfg-savepath" data-i18n="save"></button></div>
-  <div class="mline"><span class="mlbl" data-i18n="datadir"></span><button class="camp-btn" data-action="cfg-opendata" data-i18n="open_hub_data"></button><button class="camp-btn" data-action="cfg-openzdata" data-i18n="open_zdata"></button></div>
-  <div class="cfgsec" data-i18n="sys_sec"></div>
-  <div class="mline"><span class="mlbl" data-i18n="autostart"></span><label class="tgl"><input type="checkbox" id="autoStartTgl"><i></i></label><span class="mut" data-i18n="autostart_hint"></span></div>
-  <div class="mline"><span class="mlbl" data-i18n="hot"></span><label class="tgl"><input type="checkbox" id="hotTgl"><i></i></label><span class="mut" data-i18n="hot_hint"></span></div>
-  <div class="hotnote" data-i18n="hot_note"></div>
-  <div class="mline"><span class="mlbl" data-i18n="safe_mode"></span><label class="tgl"><input type="checkbox" id="safeModeTgl"><i></i></label><span class="mut" data-i18n="safe_hint"></span></div>
-  <div class="mline"><span class="mlbl" data-i18n="lang"></span><select id="langSel"><option value="zh">中文</option><option value="en">English</option></select></div>
-  <div class="mfoot"><span></span><button class="cancel" data-action="cfg-close" data-i18n="close"></button></div>
-</div></div>
+<!-- Add account -->
+<div class="overlay" id="addModal" hidden>
+  <div class="mbox" role="dialog" aria-modal="true" aria-labelledby="addTitle">
+    <h3 id="addTitle" data-i18n="add_title"></h3>
+    <div class="sub" data-i18n="add_sub"></div>
+    <div id="oauthProviders">
+      <button class="prov" data-action="prov" data-provider="zai"><span class="pchip zai">Z</span><span class="prov-txt"><span class="pn" data-i18n="zai_name"></span><span class="pd" data-i18n="zai_desc"></span></span></button>
+      <button class="prov" data-action="prov" data-provider="bigmodel"><span class="pchip bm">M</span><span class="prov-txt"><span class="pn" data-i18n="bm_name"></span><span class="pd" data-i18n="bm_desc"></span></span></button>
+    </div>
+    <div class="mstatus" id="oauthStatus" role="status"></div>
+    <div class="mcount num" id="oauthCountdown"></div>
+    <div class="mactions">
+      <button class="linkbtn" id="oauthReopen" data-action="oauth-reopen" data-i18n="reopen" hidden></button>
+      <button class="linkbtn" id="oauthCopy" data-action="oauth-copy" data-i18n="copy_link" hidden></button>
+      <button class="linkbtn" id="oauthRetry" data-action="oauth-retry" data-i18n="retry_signin" hidden></button>
+      <span class="grow"></span>
+      <button class="cancel" data-action="add-close" data-i18n="cancel"></button>
+    </div>
+  </div>
+</div>
 
-<div class="overlay" id="bakModal" style="display:none">
-<div class="mbox">
-  <h3 data-i18n="bak_title"></h3><div class="sub" data-i18n="bak_sub"></div>
-  <div class="mline"><span class="mlbl" data-i18n="export_to"></span><input id="bakPwd" type="password" class="min" data-i18n-ph="bak_ph"><button class="camp-btn" data-action="bak-export" data-i18n="export_btn"></button></div>
-  <div class="mline"><span class="mlbl" data-i18n="import_from"></span><input id="impPath" type="text" class="min wide" data-i18n-ph="imp_path_ph"><input id="impPwd" type="password" class="min" data-i18n-ph="imp_pwd_ph"><button class="camp-btn" data-action="bak-import" data-i18n="import_btn"></button></div>
-  <div class="mstatus" id="bakStatus"></div>
-  <div class="mfoot"><span></span><button class="cancel" data-action="bak-close" data-i18n="close"></button></div>
-</div></div>
+<!-- Settings / about -->
+<div class="overlay" id="cfgModal" hidden>
+  <div class="mbox wide" role="dialog" aria-modal="true" aria-labelledby="cfgTitle">
+    <h3 id="cfgTitle" data-i18n="cfg_title"></h3>
+    <div class="cfgsec" data-i18n="about"></div>
+    <div class="aboutline">ZCode Hub <b id="cfgVer" class="num"></b><span data-i18n="about_line"></span> · <span class="num" id="zcodeVer"></span></div>
+    <div class="mline">
+      <button class="camp-btn" data-action="cfg-checkupdate" data-i18n="check_upd"></button>
+      <button class="camp-btn" data-action="open-repo" data-url="https://github.com/Ebonyhtx/zcode-hub" data-i18n="repo"></button>
+      <span class="mut" id="updTxt" role="status"></span>
+    </div>
+
+    <div class="cfgsec" data-i18n="zcode_sec"></div>
+    <div class="mline">
+      <span class="mlbl" data-i18n="client_path"></span>
+      <input id="zcPath" type="text" class="min" data-i18n-ph="path_ph">
+      <button class="icon-btn" data-action="cfg-browse" data-i18n-aria="browse" aria-label="Browse"><svg class="icon"><use href="#i-folder"/></svg></button>
+      <button class="camp-btn" data-action="cfg-savepath" data-i18n="save"></button>
+    </div>
+    <div class="mline">
+      <span class="mlbl" data-i18n="datadir"></span>
+      <button class="camp-btn" data-action="cfg-opendata" data-i18n="open_hub_data"></button>
+      <button class="camp-btn" data-action="cfg-openzdata" data-i18n="open_zdata"></button>
+    </div>
+
+    <div class="cfgsec" data-i18n="sys_sec"></div>
+    <div class="mline"><span class="mlbl" data-i18n="autostart"></span><label class="tgl"><input type="checkbox" id="autoStartTgl"><i></i><span class="sr-only" data-i18n="autostart"></span></label><span class="mut" data-i18n="autostart_hint"></span></div>
+    <div class="mline"><span class="mlbl" data-i18n="start_min"></span><label class="tgl"><input type="checkbox" id="startMinTgl"><i></i><span class="sr-only" data-i18n="start_min"></span></label><span class="mut" data-i18n="start_min_hint"></span></div>
+    <div class="mline"><span class="mlbl" data-i18n="close_action"></span><select id="closeActionSel"><option value="tray" data-i18n="close_tray"></option><option value="quit" data-i18n="close_quit"></option></select></div>
+    <div class="mline"><span class="mlbl" data-i18n="hot"></span><label class="tgl"><input type="checkbox" id="hotTgl"><i></i><span class="sr-only" data-i18n="hot"></span></label><span class="mut" data-i18n="hot_hint"></span></div>
+    <div class="hotnote" data-i18n="hot_note"></div>
+    <div class="mline"><span class="mlbl" data-i18n="safe_mode"></span><label class="tgl"><input type="checkbox" id="safeModeTgl"><i></i><span class="sr-only" data-i18n="safe_mode"></span></label><span class="mut" data-i18n="safe_hint"></span></div>
+    <div class="mline"><span class="mlbl" data-i18n="lang"></span><select id="langSel"><option value="zh">中文</option><option value="en">English</option></select></div>
+    <div class="mline">
+      <button class="camp-btn danger" data-action="cfg-kill"><svg class="icon"><use href="#i-power"/></svg><span data-i18n="kill"></span></button>
+      <button class="camp-btn" data-action="cfg-history"><svg class="icon"><use href="#i-history"/></svg><span data-i18n="claim_history"></span></button>
+    </div>
+    <div class="mfoot"><span></span><button class="cancel" data-action="cfg-close" data-i18n="close"></button></div>
+  </div>
+</div>
+
+<!-- Backup -->
+<div class="overlay" id="bakModal" hidden>
+  <div class="mbox wide" role="dialog" aria-modal="true" aria-labelledby="bakTitle">
+    <h3 id="bakTitle" data-i18n="bak_title"></h3>
+    <div class="sub" data-i18n="bak_sub"></div>
+    <div class="cfgsec" data-i18n="export_to"></div>
+    <div class="mline">
+      <input id="bakPwd" type="password" class="min" data-i18n-ph="bak_ph">
+      <button class="camp-btn" data-action="bak-export" data-i18n="export_btn"></button>
+    </div>
+    <div class="cfgsec" data-i18n="import_from"></div>
+    <div class="dropzone" id="impDrop" data-i18n="drop_hint"></div>
+    <div class="mline">
+      <input id="impPath" type="text" class="min" data-i18n-ph="imp_path_ph">
+      <button class="icon-btn" data-action="bak-browse" data-i18n-aria="browse" aria-label="Browse"><svg class="icon"><use href="#i-folder"/></svg></button>
+    </div>
+    <div class="mline">
+      <input id="impPwd" type="password" class="min" data-i18n-ph="imp_pwd_ph">
+      <button class="camp-btn" data-action="bak-import" data-i18n="import_btn"></button>
+    </div>
+    <div class="mstatus" id="bakStatus" role="status"></div>
+    <div class="mactions" id="bakActions" hidden>
+      <button class="linkbtn" data-action="bak-reveal" data-i18n="open_folder"></button>
+    </div>
+    <div class="mfoot"><span></span><button class="cancel" data-action="bak-close" data-i18n="close"></button></div>
+  </div>
+</div>
+
+<!-- Generic confirm -->
+<div class="overlay" id="confirmModal" hidden>
+  <div class="mbox" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+    <h3 id="confirmTitle"></h3>
+    <div class="sub" id="confirmBody"></div>
+    <div class="mfoot">
+      <button class="cancel" data-action="confirm-cancel" data-i18n="cancel"></button>
+      <button class="camp-btn" data-action="confirm-ok" data-i18n="confirm_ok"></button>
+    </div>
+  </div>
+</div>
+
+<!-- Claim history -->
+<div class="overlay" id="historyModal" hidden>
+  <div class="mbox" role="dialog" aria-modal="true" aria-labelledby="historyTitle">
+    <h3 id="historyTitle" data-i18n="claim_history_title"></h3>
+    <div class="sub" data-i18n="claim_history_sub"></div>
+    <div class="history-list" id="historyList"></div>
+    <div class="mfoot"><span></span><button class="cancel" data-action="history-close" data-i18n="close"></button></div>
+  </div>
+</div>
+
+<!-- Rename -->
+<div class="overlay" id="renameModal" hidden>
+  <div class="mbox" role="dialog" aria-modal="true" aria-labelledby="renameTitle">
+    <h3 id="renameTitle" data-i18n="rename_title"></h3>
+    <div class="sub" data-i18n="rename_sub"></div>
+    <div class="mline"><input id="renameInput" type="text" class="min wide" maxlength="80" data-i18n-ph="rename_ph"></div>
+    <div class="mfoot">
+      <button class="cancel" data-action="rename-cancel" data-i18n="cancel"></button>
+      <button class="camp-btn" data-action="rename-ok" data-i18n="save"></button>
+    </div>
+  </div>
+</div>
 
 <script src="app.js"></script>
 </body>
