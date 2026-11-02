@@ -104,19 +104,26 @@ pub fn report_activation_events(
     Ok(())
 }
 
-/// preview 响应分类（纯函数）：code!=0 → 业务错误；缺 data 字段 → 协议/身份异常。
-/// 注意：客户端对「缺 data」按错误处理（manual_claim_preview_missing_data），
-/// 因此这里绝不能再把它当成「无待领福利」，否则会给出误导性的 ✓。
-pub fn parse_preview_response(j: &Value) -> Result<Vec<Value>, String> {
+/// preview 请求错误：`transient` 区分「暂时性」（网络/限频/服务端故障，稍后重试）
+/// 与「业务错误」（鉴权等，需要用户处理）。
+#[derive(Debug)]
+pub struct PreviewErr { pub msg: String, pub transient: bool }
+
+/// preview 响应分类（纯函数）：
+/// - code!=0 → 错误（429/5xx 标记为暂时性）
+/// - 缺 data / data 非对象 → **视为「当前无可领项」返回空列表**：这是服务端"没有东西可领"的
+///   常态返回，客户端同样只是不渲染 banner；不应显示红色「检测失败」制造误解。
+pub fn parse_preview_response(j: &Value) -> Result<Vec<Value>, PreviewErr> {
     let code = j.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
     if code != 0 {
         let msg = j.get("msg").and_then(|m| m.as_str()).map(|s| s.trim()).filter(|s| !s.is_empty()).unwrap_or("preview error");
-        return Err(msg.to_string());
+        // 暂时性：限频 429 或真正的 HTTP 5xx；业务码（如 4xxxx）需要用户/版本侧处理
+        return Err(PreviewErr { msg: msg.to_string(), transient: code == 429 || (500..=599).contains(&code) });
     }
-    match j.get("data") {
-        Some(d) if d.is_object() => Ok(d.get("plans").and_then(|p| p.as_array()).cloned().unwrap_or_default()),
-        _ => Err("接口未返回体验套餐数据（客户端版本或账号状态可能已变化）".into()),
-    }
+    Ok(match j.get("data") {
+        Some(d) if d.is_object() => d.get("plans").and_then(|p| p.as_array()).cloned().unwrap_or_default(),
+        _ => Vec::new(),
+    })
 }
 
 /// GET billing/preview 的 `data.plans` 原文
@@ -125,7 +132,7 @@ pub fn preview_plans(
     token: &str,
     mid: &str,
     app_version: &str,
-) -> Result<Vec<Value>, String> {
+) -> Result<Vec<Value>, PreviewErr> {
     let req = client.get(BILLING_PREVIEW_URL)
         .query(&[("app_version", app_version), ("platform", "win32-x64")])
         .header("Authorization", format!("Bearer {}", token))
@@ -139,8 +146,8 @@ pub fn preview_plans(
         .header("HTTP-Referer", "https://zcode.z.ai")
         .header("x-request-id", uuid::Uuid::new_v4().to_string())
         .timeout(Duration::from_secs(30));
-    let j: Value = req.send().map_err(|e| e.to_string())?
-        .json().map_err(|e| e.to_string())?;
+    let j: Value = req.send().map_err(|e| PreviewErr { msg: e.to_string(), transient: true })?
+        .json().map_err(|e| PreviewErr { msg: e.to_string(), transient: true })?;
     parse_preview_response(&j)
 }
 
@@ -387,17 +394,20 @@ mod tests {
     }
 
     #[test]
-    fn preview_missing_data_is_error_not_empty_benefits() {
-        // 服务端返回 code 0 但没有 data 字段：必须判为检测失败（客户端同样按错误处理）
-        assert!(parse_preview_response(&json!({"code": 0, "msg": "", "logid": "x"})).is_err());
-        // data 存在且 plans 为空：正常，确实没有可领项
+    fn preview_classification_is_practical() {
+        // 缺 data / data 非对象 = 当前无可领项（服务端常态返回），必须是成功+空列表，而不是红字告警
+        assert_eq!(parse_preview_response(&json!({"code": 0, "msg": "", "logid": "x"})).unwrap().len(), 0);
+        assert_eq!(parse_preview_response(&json!({"code": 0, "data": null})).unwrap().len(), 0);
+        // plans 为空数组同理
         assert_eq!(parse_preview_response(&json!({"code": 0, "data": {"plans": []}})).unwrap().len(), 0);
-        // 业务错误码带 msg
-        assert_eq!(
-            parse_preview_response(&json!({"code": 40001, "msg": "token invalid"})).unwrap_err(),
-            "token invalid");
-        // data 非对象同样是协议异常
-        assert!(parse_preview_response(&json!({"code": 0, "data": null})).is_err());
+        // 429 / 5xx → 暂时性错误；4xx 业务错误 → 非暂时性
+        let e429 = parse_preview_response(&json!({"code": 429, "msg": "too many"})).unwrap_err();
+        assert!(e429.transient);
+        let e500 = parse_preview_response(&json!({"code": 500})).unwrap_err();
+        assert!(e500.transient);
+        let e401 = parse_preview_response(&json!({"code": 40001, "msg": "token invalid"})).unwrap_err();
+        assert!(!e401.transient);
+        assert_eq!(e401.msg, "token invalid");
         // 正常可领项
         let plans = parse_preview_response(&json!({"code": 0, "data": {"plans": [
             {"plan_id": "p1", "name": "体验套餐", "entitlements": [{"show_name": "GLM-5.3-Flash", "grant_units": 300000000}]}

@@ -1221,7 +1221,7 @@ fn _benefits_key_result(key: &str) -> Value {
             let camps = campaigns_from_plans(&plans);
             json!({"ok": true, "count": camps.len(), "campaigns": camps, "checked_at": ts})
         }
-        Err(e) => json!({"ok": false, "error": e, "count": 0, "campaigns": [], "checked_at": ts}),
+        Err(e) => json!({"ok": false, "transient": e.transient, "error": e.msg, "count": 0, "campaigns": [], "checked_at": ts}),
     }
 }
 
@@ -1353,14 +1353,14 @@ fn check_all_benefits() -> serde_json::Value {
     let keys = _all_profile_keys();
     let mut total = 0u64; let mut with = 0u64; let mut okn = 0u64;
     for (i, k) in keys.iter().enumerate() {
-        if i > 0 { std::thread::sleep(std::time::Duration::from_millis(800)); } // 避开 429 限流
+        if i > 0 { std::thread::sleep(std::time::Duration::from_millis(1200)); } // 避开 429 限流
         let r = run_benefit_check_for(k);
         if r.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) { okn += 1; }
         let c = r.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
         if c > 0 { with += 1; total += c; }
     }
     *LAST_CHECK.lock().unwrap() = Some(chrono::Utc::now().timestamp());
-    json!({"ok": true, "accounts": keys.len(), "checked_ok": okn, "accounts_with_benefits": with, "total_campaigns": total})
+    json!({"ok": true, "accounts": keys.len(), "checked_ok": okn, "failed": keys.len() as u64 - okn, "accounts_with_benefits": with, "total_campaigns": total})
 }
 
 #[tauri::command]

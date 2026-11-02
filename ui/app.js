@@ -43,6 +43,8 @@ var I18N = {
     t_check_done0: "检测完成：{ok}/{all} 个账号正常，均无待领福利",
     t_check_done: "检测完成：{w}/{all} 个账号有 🎁{n} 项福利待领（打开 ZCode 客户端领取）",
     t_check_fail: "检测失败", t_refresh_fail: "刷新失败: {e}",
+    ben_transient: "🔎 暂时无法检测，稍后自动重试", t_one_transient: "暂时无法检测，稍后自动重试",
+    t_check_partial: "检测完成：{ok}/{all} 个账号正常，{f} 个暂时无法检测（稍后自动重试）",
     t_one_has: "🎁 该账号有 {n} 项待领福利", t_one_none: "该账号暂无待领福利", t_one_fail: "检测失败",
     t_switched_hot: "已热切换（客户端未重启）", t_switched_re: "已切换并重启 ZCode", t_switched_nore: "凭据已切换，ZCode 未自动重启，请手动打开",
     t_switch_fail: "切换失败", t_close_fail: "无法关闭 ZCode（可能仍在托盘运行），请手动退出后重试",
@@ -94,6 +96,8 @@ var I18N = {
     t_check_done0: "Check done: {ok}/{all} accounts fine, nothing to claim",
     t_check_done: "Check done: {w}/{all} accounts have 🎁{n} claimable (claim in ZCode client)",
     t_check_fail: "Check failed", t_refresh_fail: "Refresh failed: {e}",
+    ben_transient: "🔎 Check temporarily unavailable, will retry", t_one_transient: "Check temporarily unavailable, will retry",
+    t_check_partial: "Check done: {ok}/{all} fine, {f} temporarily unavailable (auto-retry)",
     t_one_has: "🎁 This account has {n} claimable", t_one_none: "Nothing to claim for this account", t_one_fail: "Check failed",
     t_switched_hot: "Hot-switched (client not restarted)", t_switched_re: "Switched, ZCode restarted", t_switched_nore: "Credentials switched — start ZCode manually",
     t_switch_fail: "Switch failed", t_close_fail: "Cannot close ZCode (may be in tray). Quit it manually and retry",
@@ -289,7 +293,10 @@ var prevCounts = {};
 function renderBenefitState(b, key) {
   if (!b) return '<div class="bstate unk">' + esc(t("not_checked")) + '</div>';
   var when = b.checked_at ? ' <span class="whn num">· '+fmtT2(b.checked_at)+'</span>' : "";
-  if (b.ok === false) return '<div class="bstate bad">'+esc(t("ben_fail", {e: b.error || "?"}))+'</div>';
+  if (b.ok === false) {
+    if (b.transient) return '<div class="bstate unk">'+esc(t("ben_transient"))+when+'</div>';
+    return '<div class="bstate bad">'+esc(t("ben_fail", {e: b.error || "?"}))+'</div>';
+  }
   if (!b.count) return '<div class="bstate none">'+esc(t("ben_none"))+when+'</div>';
   var rows = '<div class="campaigns">' + (b.campaigns || []).map(function(c) {
     var detail = c.detail ? ' <span>(' + esc(c.detail) + ')</span>' : "";
@@ -405,9 +412,10 @@ function doCheck() {
   btn.disabled = true; btn.textContent = t("checking_dots");
   invoke("check_all_benefits").then(function(r) {
     btn.disabled = false; btn.textContent = t("check_all");
-    if (!r.ok) { pushToast(t("t_check_fail"), "bad"); return; }
-    if (r.total_campaigns === 0) pushToast(t("t_check_done0", {ok: r.checked_ok, all: r.accounts}), "ok");
-    else pushToast(t("t_check_done", {w: r.accounts_with_benefits, all: r.accounts, n: r.total_campaigns}), "warn");
+    if (r.total_campaigns === 0) {
+      if (r.failed > 0) pushToast(t("t_check_partial", {ok: r.checked_ok, all: r.accounts, f: r.failed}), "warn");
+      else pushToast(t("t_check_done0", {ok: r.checked_ok, all: r.accounts}), "ok");
+    } else pushToast(t("t_check_done", {w: r.accounts_with_benefits, all: r.accounts, n: r.total_campaigns}), "warn");
     refresh();
   }).catch(function(e) {
     btn.disabled = false; btn.textContent = t("check_all");
@@ -421,6 +429,7 @@ function checkOne(key, btn) {
   invoke("check_benefits", { key: key }).then(function(r) {
     if (r.ok && r.count > 0) pushToast(t("t_one_has", {n: r.count}), "warn");
     else if (r.ok) pushToast(t("t_one_none"), "ok");
+    else if (r.transient) pushToast(t("t_one_transient"), "warn");
     else pushToast(t("t_one_fail"), "bad");
   }).catch(function(e) { pushToast(String(e), "bad"); })
   .finally(function() { btn.disabled = false; btn.innerHTML = old; refresh(); });
