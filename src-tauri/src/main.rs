@@ -7,7 +7,7 @@ use serde_json::json;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::Manager;
 
@@ -1857,7 +1857,8 @@ fn maybe_report_events(key: &str, creds: &Value, mid: &str, ver: &str) {
     }
     let Some(uid) = claim::telemetry_user_id(creds, &|s| decrypt_value(s).ok()) else { return };
     let env = claim::EventEnv::detect(ver);
-    let _ = claim::report_activation_events(http(), &env, &uid, mid);
+    let api = claim::ClaimApi::default();
+    let _ = claim::report_activation_events(http(), &api, &env, &uid, mid);
 }
 
 fn _benefits_key_result(key: &str) -> Value {
@@ -1868,8 +1869,9 @@ fn _benefits_key_result(key: &str) -> Value {
     // 检测解锁：以用户本人账号上报 app_launch / app_daily_active（与客户端启动行为一致，30 分钟节流）
     if let Some(creds) = cred_for_key(key) { maybe_report_events(key, &creds, &mid, &ver); }
     // 主数据源：marketing/touch（客户端左下角领取横幅同源）；preview 作为兜底（可能返回其他活动）
-    let marketing = claim::marketing_claim_plans(http(), &token, &mid, &ver);
-    let preview = claim::preview_plans(http(), &token, &mid, &ver);
+    let api = claim::ClaimApi::default();
+    let marketing = claim::marketing_claim_plans(http(), &api, &token, &mid, &ver);
+    let preview = claim::preview_plans(http(), &api, &token, &mid, &ver);
     match (&marketing, &preview) {
         (Err(me), Err(pe)) => json!({"ok": false, "transient": pe.transient,
             "error": format!("{} / {}", me, pe.msg), "count": 0, "campaigns": [], "checked_at": ts}),
@@ -1916,21 +1918,24 @@ fn claim_plan(key: String, plan_id: String, plan_name: Option<String>) -> Value 
 
 /// 领取成功后先做本地乐观更新：立即去掉该活动，按钮马上消失；
 /// 后台重查 marketing/touch 再校正真实状态。返回给 UI 的 success 不被网络请求阻塞。
+fn remove_campaign_from_entry(entry: &mut Value, plan_id: &str) -> bool {
+    if let Some(arr) = entry.get_mut("campaigns").and_then(|c| c.as_array_mut()) {
+        let before = arr.len();
+        arr.retain(|c| c.get("plan_id").and_then(|v| v.as_str()) != Some(plan_id));
+        if arr.len() != before {
+            entry["count"] = json!(arr.len());
+            return true;
+        }
+    }
+    false
+}
+
 fn optimistically_consume_benefit(key: &str, plan_id: &str) {
     let mut changed = false;
     {
         let mut g = BENEFITS.lock().unwrap();
         if let Some(map) = g.as_mut() {
-            if let Some(entry) = map.get_mut(key) {
-                if let Some(arr) = entry.get_mut("campaigns").and_then(|c| c.as_array_mut()) {
-                    let before = arr.len();
-                    arr.retain(|c| c.get("plan_id").and_then(|v| v.as_str()) != Some(plan_id));
-                    if arr.len() != before {
-                        entry["count"] = json!(arr.len());
-                        changed = true;
-                    }
-                }
-            }
+            if let Some(entry) = map.get_mut(key) { changed = remove_campaign_from_entry(entry, plan_id); }
         }
     }
     if changed { persist_benefits(); update_tray_tooltip(); }
@@ -1947,7 +1952,8 @@ fn claim_worker(key: String, plan_id: String, plan_name: String) {
         maybe_report_events(&key, &creds, &mid, &ver);
     }
     // 验证码（若服务端要求）：本地回环页 + 系统浏览器，用户手动完成
-    let cfg = claim::fetch_captcha_config(http(), &ver).unwrap_or(json!({"enabled": false}));
+    let api = claim::ClaimApi::default();
+    let cfg = claim::fetch_captcha_config(http(), &api, &ver).unwrap_or(json!({"enabled": false}));
     let enabled = cfg.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
     let mut param: Option<String> = None;
     let mut region: Option<String> = None;
@@ -1975,7 +1981,7 @@ fn claim_worker(key: String, plan_id: String, plan_name: String) {
     }
     set_claim_state(json!({"status":"claiming","key": key, "planName": plan_name, "planId": plan_id,
                            "updatedAt": chrono::Utc::now().timestamp()}));
-    match claim::submit_claim(http(), &token, &mid, &ver, &plan_id, param.as_deref(), region.as_deref()) {
+    match claim::submit_claim(http(), &api, &token, &mid, &ver, &plan_id, param.as_deref(), region.as_deref()) {
         Ok(data) => {
             let (eff, _s, ends) = claim::claim_timing(&data);
             let name = data.pointer("/plan/name").and_then(|v| v.as_str())
@@ -2219,20 +2225,41 @@ fn ui_lang() -> String {
 }
 
 // 全量检测所有账号福利；发现可领且通知开关开启时弹系统通知（托盘菜单与自动循环共用）
-fn _check_all_and_notify(app: &tauri::AppHandle) -> (u64, u64) {
+fn notification_payload(total: u64, accounts: u64, failed: u64, enabled: bool, force: bool, lang: &str) -> Option<(String, String)> {
+    if !force && (!enabled || total == 0) { return None; }
+    if total > 0 {
+        Some(if lang == "en" {
+            ("ZCode Hub · Benefits available".to_string(),
+             format!("{} claimable across {} account(s). Open the app to claim.", total, accounts))
+        } else {
+            ("ZCode Hub 福利提醒".to_string(),
+             format!("{} 个账号共有 {} 项福利可领取，打开应用查看", accounts, total))
+        })
+    } else if failed > 0 {
+        Some(if lang == "en" {
+            ("ZCode Hub · Check finished".to_string(),
+             format!("{failed} account(s) could not be checked; the rest have nothing to claim."))
+        } else {
+            ("ZCode Hub 检测完成".to_string(),
+             format!("{failed} 个账号暂时无法检测，其余账号暂无待领福利"))
+        })
+    } else {
+        Some(if lang == "en" {
+            ("ZCode Hub · Check finished".to_string(), "Nothing to claim right now.".to_string())
+        } else {
+            ("ZCode Hub 检测完成".to_string(), "当前没有待领福利".to_string())
+        })
+    }
+}
+
+fn _check_all_and_notify(app: &tauri::AppHandle, force_notify: bool) -> (u64, u64) {
     let keys = _all_profile_keys();
     let st = check_benefits_many(&keys);
     if st.okn > 0 { *LAST_CHECK.lock().unwrap() = Some(chrono::Utc::now().timestamp()); }
-    if st.total > 0 && load_settings().get("notify_enabled").and_then(|v| v.as_bool()).unwrap_or(true) {
-        platform::beep(); // 系统提示音：窗口隐藏到托盘时也能听到
+    let enabled = load_settings().get("notify_enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+    if let Some((title, body)) = notification_payload(st.total, st.with, st.failed, enabled, force_notify, &ui_lang()) {
+        if st.total > 0 { platform::beep(); } // 只有真的有待领福利才响，避免“无结果”也吓人
         use tauri_plugin_notification::NotificationExt;
-        let (title, body) = if ui_lang() == "en" {
-            ("ZCode Hub · Benefits available".to_string(),
-             format!("{} claimable across {} account(s). Open the app to claim.", st.total, st.with))
-        } else {
-            ("ZCode Hub 福利提醒".to_string(),
-             format!("{} 个账号共有 {} 项福利可领取，打开应用查看", st.with, st.total))
-        };
         let _ = app.notification().builder().title(title).body(body).show();
     }
     (st.okn, st.failed)
@@ -2250,7 +2277,7 @@ fn _auto_check_loop(app: tauri::AppHandle) {
         if now < *COOLDOWN_UNTIL.lock().unwrap() { continue; }
         let due = match *LAST_CHECK.lock().unwrap() { None => true, Some(l) => now - l >= minutes * 60 - 15 };
         if !due { continue; }
-        let (okn, failed) = _check_all_and_notify(&app);
+        let (okn, failed) = _check_all_and_notify(&app, false);
         if okn == 0 && failed > 0 {
             let streak = { let mut f = FAILS.lock().unwrap(); *f = (*f + 1).min(4); *f };
             let backoff = 60i64.saturating_mul(1i64 << streak.min(4)).min(900);
@@ -2293,8 +2320,10 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     // 菜单固定双语：语言切换不需要重建托盘菜单，也不会出现只懂中文/只懂英文的入口
     let show = MenuItem::with_id(app, "show", "显示 ZCode Hub / Show", true, None::<&str>)?;
     let check = MenuItem::with_id(app, "check", "立即检测福利 / Check now", true, None::<&str>)?;
+    let open = MenuItem::with_id(app, "open", "打开 ZCode / Open ZCode", true, None::<&str>)?;
+    let sep = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "退出 / Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &check, &quit])?;
+    let menu = Menu::with_items(app, &[&show, &check, &open, &sep, &quit])?;
 
     let icon_bytes = include_bytes!("../icons/icon.png");
     let icon = tauri::image::Image::from_bytes(icon_bytes)?;
@@ -2314,7 +2343,12 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 }
                 "check" => {
                     let h = app.clone();
-                    std::thread::spawn(move || _check_all_and_notify(&h));
+                    std::thread::spawn(move || { let _ = _check_all_and_notify(&h, true); });
+                }
+                "open" => {
+                    std::thread::spawn(|| {
+                        if let Some(exe) = zcode_exe_path() { let _ = launch_zcode_process(&exe); }
+                    });
                 }
                 "quit" => { save_window_state(app); app.exit(0); }
                 _ => {}
@@ -2524,6 +2558,35 @@ mod tests {
         assert!(hot_swap_verified(&p, &v, None));
         assert_eq!(read_json(&p).unwrap(), v);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn notification_payload_respects_toggle_and_manual_force() {
+        // 自动检测：关闭通知或无福利 → 不提醒
+        assert!(notification_payload(0, 0, 0, true, false, "zh").is_none());
+        assert!(notification_payload(3, 2, 0, false, false, "zh").is_none());
+        // 自动检测：有福利且开启通知 → 中英文都包含账号/数量
+        let (_, zh) = notification_payload(3, 2, 0, true, false, "zh").unwrap();
+        assert!(zh.contains('2') && zh.contains('3'));
+        let (_, en) = notification_payload(3, 2, 0, true, false, "en").unwrap();
+        assert!(en.contains("2") && en.contains("3"));
+        // 手动托盘检测：即使无福利也要给结果反馈；有失败时说明失败数
+        let (_, none) = notification_payload(0, 0, 0, false, true, "zh").unwrap();
+        assert!(none.contains("没有"));
+        let (_, fail) = notification_payload(0, 0, 2, false, true, "en").unwrap();
+        assert!(fail.contains('2'));
+    }
+
+    #[test]
+    fn optimistic_removal_updates_campaigns_and_count() {
+        let mut entry = json!({"ok": true, "count": 2, "campaigns": [
+            {"plan_id": "p1", "title": "a"}, {"plan_id": "p2", "title": "b"}
+        ]});
+        assert!(remove_campaign_from_entry(&mut entry, "p1"));
+        assert_eq!(entry["count"], json!(1));
+        assert_eq!(entry["campaigns"].as_array().unwrap().len(), 1);
+        assert!(!remove_campaign_from_entry(&mut entry, "missing"));
+        assert_eq!(entry["count"], json!(1));
     }
 
     #[test]

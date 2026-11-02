@@ -12,13 +12,24 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 
-pub const EVENT_REPORT_URL: &str = "https://zcode.z.ai/api/v1/event/report";
-pub const BILLING_PREVIEW_URL: &str = "https://zcode.z.ai/api/v1/zcode-plan/billing/preview";
-pub const BILLING_CLAIM_URL: &str = "https://zcode.z.ai/api/v1/zcode-plan/billing/claim";
-pub const CLIENT_CONFIGS_URL: &str = "https://zcode.z.ai/api/v1/client/configs";
+pub const ZCODE_BASE: &str = "https://zcode.z.ai";
+pub const EVENT_REPORT_PATH: &str = "/api/v1/event/report";
+pub const BILLING_PREVIEW_PATH: &str = "/api/v1/zcode-plan/billing/preview";
+pub const BILLING_CLAIM_PATH: &str = "/api/v1/zcode-plan/billing/claim";
+pub const CLIENT_CONFIGS_PATH: &str = "/api/v1/client/configs";
 pub const ACTIVATION_EVENTS: [&str; 2] = ["app_launch", "app_daily_active"];
 /// 客户端左下角领取横幅的真实数据源（营销活动投放），不是 billing/preview
-pub const MARKETING_TOUCH_URL: &str = "https://zcode.z.ai/api/v1/marketing/touch";
+pub const MARKETING_TOUCH_PATH: &str = "/api/v1/marketing/touch";
+
+/// 可注入的接口根地址：生产用默认 zcode.z.ai，测试用本地 mock 服务。
+#[derive(Debug, Clone)]
+pub struct ClaimApi { pub base: String }
+impl Default for ClaimApi { fn default() -> Self { Self { base: ZCODE_BASE.to_string() } } }
+impl ClaimApi {
+    #[cfg(test)]
+    pub fn new(base: impl Into<String>) -> Self { Self { base: base.into() } }
+    fn url(&self, path: &str) -> String { format!("{}{}", self.base.trim_end_matches('/'), path) }
+}
 const SCREEN_RESOLUTION_FALLBACK: &str = "2560x1440";
 const CAPTCHA_TIMEOUT_SECS: u64 = 150;
 const MAX_HTTP_BYTES: usize = 64 * 1024;
@@ -85,13 +96,14 @@ pub fn telemetry_user_id(creds: &Value, decrypt: &dyn Fn(&str) -> Option<String>
 /// 上报两条激活事件；返回首个错误（尽力而为：调用方通常忽略错误继续 preview）
 pub fn report_activation_events(
     client: &reqwest::blocking::Client,
+    api: &ClaimApi,
     env: &EventEnv,
     user_id: &str,
     mid: &str,
 ) -> Result<(), String> {
     for element in ACTIVATION_EVENTS {
         let body = activation_event_body(element, &uuid::Uuid::new_v4().to_string(), user_id, mid, env);
-        let resp = client.post(EVENT_REPORT_URL)
+        let resp = client.post(api.url(EVENT_REPORT_PATH))
             .header("Content-Type", "application/json")
             .header("User-Agent", format!("ZCode/{}", env.app_version))
             .timeout(Duration::from_secs(10))
@@ -140,11 +152,12 @@ pub fn marketing_claim_plans_from(j: &Value) -> Result<Vec<Value>, String> {
 /// GET marketing/touch（账号自己的 token + deviceMid），提取可领活动
 pub fn marketing_claim_plans(
     client: &reqwest::blocking::Client,
+    api: &ClaimApi,
     token: &str,
     mid: &str,
     app_version: &str,
 ) -> Result<Vec<Value>, String> {
-    let j: Value = client.get(MARKETING_TOUCH_URL)
+    let j: Value = client.get(api.url(MARKETING_TOUCH_PATH))
         .query(&[("locale", "zh-CN"), ("seq", "0")])
         .header("Authorization", format!("Bearer {}", token))
         .header("X-Device-Mid", mid)
@@ -189,11 +202,12 @@ pub fn parse_preview_response(j: &Value) -> Result<Vec<Value>, PreviewErr> {
 /// GET billing/preview 的 `data.plans` 原文
 pub fn preview_plans(
     client: &reqwest::blocking::Client,
+    api: &ClaimApi,
     token: &str,
     mid: &str,
     app_version: &str,
 ) -> Result<Vec<Value>, PreviewErr> {
-    let req = client.get(BILLING_PREVIEW_URL)
+    let req = client.get(api.url(BILLING_PREVIEW_PATH))
         .query(&[("app_version", app_version), ("platform", "win32-x64")])
         .header("Authorization", format!("Bearer {}", token))
         .header("X-Device-Mid", mid)
@@ -214,8 +228,8 @@ pub fn preview_plans(
 }
 
 /// 客户端 captcha 配置（/api/v1/client/configs → data.configs.captcha）
-pub fn fetch_captcha_config(client: &reqwest::blocking::Client, app_version: &str) -> Result<Value, String> {
-    let j: Value = client.get(CLIENT_CONFIGS_URL)
+pub fn fetch_captcha_config(client: &reqwest::blocking::Client, api: &ClaimApi, app_version: &str) -> Result<Value, String> {
+    let j: Value = client.get(api.url(CLIENT_CONFIGS_PATH))
         .header("User-Agent", format!("ZCode/{}", app_version))
         .header("X-ZCode-App-Version", app_version)
         .header("X-Title", "Z Code@electron")
@@ -234,8 +248,10 @@ pub fn fetch_captcha_config(client: &reqwest::blocking::Client, app_version: &st
 }
 
 /// POST billing/claim；成功返回 data（含 plan.entitlements[].effective_at 等）
+#[allow(clippy::too_many_arguments)] // 与官方请求字段一一对应
 pub fn submit_claim(
     client: &reqwest::blocking::Client,
+    api: &ClaimApi,
     token: &str,
     mid: &str,
     app_version: &str,
@@ -243,7 +259,7 @@ pub fn submit_claim(
     captcha_param: Option<&str>,
     captcha_region: Option<&str>,
 ) -> Result<Value, String> {
-    let mut req = client.post(BILLING_CLAIM_URL)
+    let mut req = client.post(api.url(BILLING_CLAIM_PATH))
         .header("Authorization", format!("Bearer {}", token))
         .header("X-Device-Mid", mid)
         .header("Content-Type", "application/json")
@@ -631,6 +647,63 @@ mod tests {
             .json(&json!({"param": "x", "region": "cn"}))
             .send().expect("POST result");
         assert_eq!(r.status().as_u16(), 403);
+    }
+
+    #[test]
+    fn claim_protocol_sequence_against_mock_server() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(15);
+            let mut served = 0;
+            while Instant::now() < deadline && served < 10 {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let _ = stream.set_nonblocking(false);
+                        let req = read_http_request(&mut stream, MAX_HTTP_BYTES).unwrap_or_default();
+                        let path = req.lines().next().and_then(|l| l.split_whitespace().nth(1))
+                            .unwrap_or("").split('?').next().unwrap_or("").to_string();
+                        let body = if path.ends_with(MARKETING_TOUCH_PATH) {
+                            json!({"code": 0, "data": {"deliveries": [{"banner": {
+                                "buttons": [{"action": {"type": "claim_zcode_plan", "args": {"plan_id": "p1"}}}],
+                                "background": {"args": {"zcode_plan": {"plan_id": "p1", "name": "Demo Plan",
+                                    "entitlements": [{"show_name": "GLM-Demo", "grant_units": 42}]}}}
+                            }}]}}).to_string()
+                        } else if path.ends_with(BILLING_CLAIM_PATH) {
+                            json!({"code": 0, "data": {"plan": {"name": "Demo Plan",
+                                "entitlements": [{"effective_at": 123}]}}}).to_string()
+                        } else if path.ends_with(CLIENT_CONFIGS_PATH) {
+                            json!({"code": 0, "data": {"configs": {"captcha": {"enabled": false}}}}).to_string()
+                        } else {
+                            json!({"code": 0}).to_string()
+                        };
+                        let resp = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+                        let _ = stream.write_all(resp.as_bytes());
+                        served += 1;
+                        if path.ends_with(BILLING_CLAIM_PATH) { break; }
+                    }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        let api = ClaimApi::new(format!("http://127.0.0.1:{}", port));
+        let client = reqwest::blocking::Client::new();
+        let env = env();
+        report_activation_events(&client, &api, &env, "u1", "mid1").expect("events");
+        let plans = marketing_claim_plans(&client, &api, "tok", "mid1", "3.17.1").expect("marketing");
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0]["plan_id"], json!("p1"));
+        let preview = preview_plans(&client, &api, "tok", "mid1", "3.17.1").expect("preview");
+        assert!(preview.is_empty());
+        let cfg = fetch_captcha_config(&client, &api, "3.17.1").expect("configs");
+        assert_eq!(cfg["enabled"], json!(false));
+        let data = submit_claim(&client, &api, "tok", "mid1", "3.17.1", "p1", None, None).expect("claim");
+        assert_eq!(data.pointer("/plan/name"), Some(&json!("Demo Plan")));
+        server.join().expect("mock server join");
     }
 
     #[test]
