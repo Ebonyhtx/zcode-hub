@@ -28,6 +28,13 @@ var I18N = {
     used_up: "已用完", remain: "剩余", total: "总", used: "已用", expires: "到期", unknown_total: "总量未知",
     exp_soon: "{h} 小时后到期", exp_lt1h: "不到 1 小时后到期", burn: "按当前速度约 {d} 天", burn_lt1: "按当前速度不足 1 天",
     spark_label: "趋势", spark_hint: "最近几次采样的剩余额度走势",
+    search_ph: "搜索账号或标签…", filter_all: "全部", filter_current: "当前", filter_benefits: "有福利", filter_expired: "已过期", no_match: "没有匹配的账号",
+    pin: "置顶", unpin: "取消置顶", tags: "标签", tags_title: "编辑标签", tags_sub: "用逗号分隔；最多 8 个，每个最多 16 字。", tags_ph: "例如：工作, 团队", tags_saved: "标签已保存", tags_fail: "保存标签失败：{e}",
+    quota_notify: "额度提醒", quota_notify_hint: "即将到期或不足 10% 时通知", auto_backup: "自动备份", auto_backup_hint: "每天备份到本机，保留 7 份", update_notify: "新版本提醒", update_notify_hint: "每 24 小时检查一次",
+    backup_now: "立即备份", backup_done: "备份完成：{n} 个账号", backup_fail: "备份失败：{e}", diagnostics: "导出诊断报告", diag_done: "诊断报告已导出", diag_fail: "导出失败：{e}",
+    import_preview_btn: "预览", import_confirm: "确认导入", import_preview_hint: "新增 {n} · 重复 {d} · 需重登 {r}", import_preview_fail: "预览失败：{e}", import_none: "没有可导入的账号",
+    preview_new: "新增", preview_dup: "重复", preview_relogin: "需重登", preview_invalid: "无效", import_confirm_hint: "确认后将合并导入，重复账号会跳过。",
+    history_export: "导出 JSON", history_export_done: "已导出 {n} 条记录", history_export_fail: "导出失败：{e}", update_banner: "新版本 v{v} 可用",
     plan_pending: "{t} 生效", plan_active_syncing: "已生效 · 额度同步中", plan_daily: "/天",
     not_checked: "未检测", ben_none: "无待领福利", ben_has: "{n} 个待领福利", ben_fail: "检测失败：{e}", ben_transient: "暂时无法检测，稍后自动重试",
     claim: "去领取", claim_btn_prep: "准备中", claim_btn_verify: "验证中", claim_btn_claim: "领取中",
@@ -93,6 +100,13 @@ var I18N = {
     used_up: "Used up", remain: "left", total: "Total", used: "used", expires: "expires", unknown_total: "Total unknown",
     exp_soon: "expires in {h}h", exp_lt1h: "expires in <1h", burn: "~{d}d at this pace", burn_lt1: "under a day at this pace",
     spark_label: "trend", spark_hint: "Remaining quota across recent samples",
+    search_ph: "Search accounts or tags…", filter_all: "All", filter_current: "Current", filter_benefits: "Has benefits", filter_expired: "Expired", no_match: "No matching accounts",
+    pin: "Pin", unpin: "Unpin", tags: "Tags", tags_title: "Edit tags", tags_sub: "Comma-separated; up to 8 tags, 16 chars each.", tags_ph: "e.g. work, team", tags_saved: "Tags saved", tags_fail: "Failed to save tags: {e}",
+    quota_notify: "Quota alerts", quota_notify_hint: "Notify when expiring soon or below 10%", auto_backup: "Auto backup", auto_backup_hint: "Daily local backup, keep 7 copies", update_notify: "Update alerts", update_notify_hint: "Check every 24 hours",
+    backup_now: "Back up now", backup_done: "Backup complete: {n} accounts", backup_fail: "Backup failed: {e}", diagnostics: "Export diagnostics", diag_done: "Diagnostics exported", diag_fail: "Export failed: {e}",
+    import_preview_btn: "Preview", import_confirm: "Import", import_preview_hint: "{n} new · {d} duplicate · {r} need re-login", import_preview_fail: "Preview failed: {e}", import_none: "Nothing to import",
+    preview_new: "New", preview_dup: "Duplicate", preview_relogin: "Re-login", preview_invalid: "Invalid", import_confirm_hint: "Import merges new accounts and skips duplicates.",
+    history_export: "Export JSON", history_export_done: "Exported {n} records", history_export_fail: "Export failed: {e}", update_banner: "v{v} is available",
     plan_pending: "starts {t}", plan_active_syncing: "active · syncing quota", plan_daily: "/day",
     not_checked: "Not checked", ben_none: "Nothing to claim", ben_has: "{n} claimable", ben_fail: "Check failed: {e}", ben_transient: "Check temporarily unavailable — will retry",
     claim: "Claim", claim_btn_prep: "Preparing", claim_btn_verify: "Verifying", claim_btn_claim: "Claiming",
@@ -134,6 +148,13 @@ var I18N = {
     t_restart_fail: "Restart failed: {e}", t_open_client_fail: "Failed to open ZCode", t_export_path: "Exported to: {p}", t_copied: "Copied"
   }
 };
+/* Locale registry: 新增语言时调用 registerLocale(code, name, dict) 并补一份字典即可；
+   t() 始终回退到 zh，缺失键不会显示成 key。语言选择器目前只暴露 zh/en。 */
+var LOCALES = { zh: { name: "中文" }, en: { name: "English" } };
+function registerLocale(code, name, dict) {
+  LOCALES[code] = { name: name };
+  if (dict) I18N[code] = dict;
+}
 var LANG = (function() { try { return localStorage.getItem("hub-lang") || ((navigator.language || "zh").indexOf("zh") === 0 ? "zh" : "en"); } catch(e) { return "zh"; } })();
 function t(key, vars) {
   var s = (I18N[LANG] && I18N[LANG][key]) || I18N.zh[key] || key;
@@ -204,6 +225,7 @@ function fmtQText(n) { var p = fmtParts(n); return p.v + p.u; }
 /* ---------------- state ---------------- */
 var S = {
   st: null, quota: {}, history: {}, quotaSeq: {}, folded: loadFold(), sort: loadSort(), order: loadOrder(),
+  query: "", filter: "all", pins: loadPins(), tagKey: null, pendingImport: null,
   claim: null, busyKey: null, checking: false, checkProgress: {done:0,total:0},
   refreshing: false, queued: false, queuedForce: false, queuedKey: null, queuedDone: [],
   notice: null, noticeClosed: false, offline: false, lastRefresh: 0,
@@ -216,6 +238,8 @@ function saveFold() { try { localStorage.setItem("hub-fold", JSON.stringify(S.fo
 function loadSort() { try { return localStorage.getItem("hub-sort") || "current"; } catch(e) { return "current"; } }
 function loadOrder() { try { var a = JSON.parse(localStorage.getItem("hub-order") || "[]"); return Array.isArray(a) ? a : []; } catch(e) { return []; } }
 function saveOrder() { try { localStorage.setItem("hub-order", JSON.stringify(S.order)); } catch(e) {} }
+function loadPins() { try { var o = JSON.parse(localStorage.getItem("hub-pins") || "{}"); return o && typeof o === "object" ? o : {}; } catch(e) { return {}; } }
+function savePins() { try { localStorage.setItem("hub-pins", JSON.stringify(S.pins)); } catch(e) {} }
 function ensureOrder() {
   if (!S.st) return;
   var keys = (S.st.profiles || []).map(function(p) { return p.key; });
@@ -403,6 +427,19 @@ function currentPseudo() {
 function displayProfiles() {
   var arr = sortedProfiles();
   if (S.st && S.st.current_logged_in && !arr.some(function(p) { return p.is_current; })) arr.unshift(currentPseudo());
+  var q = String(S.query || "").trim().toLowerCase();
+  arr = arr.filter(function(p) {
+    if (S.filter === "current" && !p.is_current) return false;
+    if (S.filter === "benefits" && benefitCount(p.key) <= 0) return false;
+    if (S.filter === "expired" && !p.jwt_expired) return false;
+    if (q) {
+      var hay = [p.label || "", p.provider || "", (p.tags || []).join(" ")].join(" ").toLowerCase();
+      if (hay.indexOf(q) < 0) return false;
+    }
+    return true;
+  });
+  // 稳定排序：置顶账号保持当前排序模式内的相对顺序
+  arr.sort(function(a, b) { return (S.pins[a.key] ? 0 : 1) - (S.pins[b.key] ? 0 : 1); });
   return arr;
 }
 function profileByKey(key) {
@@ -475,6 +512,7 @@ function foldAll(v) {
 
 function cardSig(p) {
   return [LANG, S.sort, S.sort === "manual" ? S.order.indexOf(p.key) : "", p.key, p.label, p.is_current, p.jwt_expired, p.error || "",
+    JSON.stringify(p.tags || []), S.pins[p.key] ? 1 : 0,
     JSON.stringify(S.quota[p.key] || null),
     JSON.stringify((S.st.benefits || {})[p.key] || null),
     JSON.stringify((S.history[p.key] || {}).forecast || null),
@@ -500,7 +538,8 @@ function cardHtml(p) {
   var qd = S.quota[p.key];
   var benCount = bd && bd.ok ? (bd.count || 0) : 0;
   var tags = (p.is_current ? '<span class="tag cur">' + esc(t("current")) + '</span>' : "")
-    + (p.jwt_expired ? '<span class="tag expired">' + esc(t("expired")) + '</span>' : "");
+    + (p.jwt_expired ? '<span class="tag expired">' + esc(t("expired")) + '</span>' : "")
+    + (p.tags || []).map(function(tg) { return '<span class="tag tag-user">' + esc(tg) + '</span>'; }).join("");
   var body;
   if (p.error) {
     body = '<div class="inline-error">' + esc(t("snapshot_error", {e: localizeErr(p.error)})) + '</div>';
@@ -518,6 +557,8 @@ function cardHtml(p) {
     + '</span>'
     + '<span class="acct-actions">'
     + (S.sort === "manual" && !p.pseudo ? manualMoveButtons(p) : "")
+    + (p.pseudo ? "" : '<button class="icon-btn' + (S.pins[p.key] ? " on" : "") + '" data-action="pin" data-key="' + esc(p.key) + '" aria-label="' + esc(S.pins[p.key] ? t("unpin") : t("pin")) + '" title="' + esc(S.pins[p.key] ? t("unpin") : t("pin")) + '"><svg class="icon"><use href="#i-pin"/></svg></button>')
+    + (p.pseudo ? "" : '<button class="icon-btn" data-action="tags" data-key="' + esc(p.key) + '" aria-label="' + esc(t("tags")) + '" title="' + esc(t("tags")) + '"><svg class="icon"><use href="#i-tag"/></svg></button>')
     + (p.pseudo ? "" : '<button class="icon-btn" data-action="rename" data-key="' + esc(p.key) + '" aria-label="' + esc(t("rename")) + '" title="' + esc(t("rename")) + '"><svg class="icon"><use href="#i-pencil"/></svg></button>')
     + (p.pseudo ? "" : '<button class="icon-btn danger" data-action="del" data-key="' + esc(p.key) + '" aria-label="' + esc(t("delete")) + '" title="' + esc(t("delete")) + '"><svg class="icon"><use href="#i-trash"/></svg></button>')
     + '</span></div>'
@@ -828,7 +869,9 @@ function renderList() {
   var list = displayProfiles();
   var box = el("acctList");
   if (!list.length) {
-    box.innerHTML = onboardingHtml();
+    box.innerHTML = (S.st && S.st.profiles && S.st.profiles.length)
+      ? '<div class="empty small">' + esc(t("no_match")) + '</div>'
+      : onboardingHtml();
     S.renderedKeys = "";
     return;
   }
@@ -1027,7 +1070,10 @@ function settingsBody(patch) {
     safeMode: !!el("safeModeTgl").checked,
     lang: LANG,
     closeAction: el("closeActionSel").value,
-    startMinimized: !!el("startMinTgl").checked
+    startMinimized: !!el("startMinTgl").checked,
+    quotaNotify: !!el("quotaNotifyTgl").checked,
+    autoBackup: !!el("autoBackupTgl").checked,
+    updateNotify: !!el("updateNotifyTgl").checked
   };
   if (S.st && S.st.settings) body.zcodePath = el("zcPath").value.trim();
   if (patch) Object.keys(patch).forEach(function(k) { body[k] = patch[k]; });
@@ -1041,6 +1087,9 @@ function syncForm(force) {
   el("notifyTgl").checked = s.notify_enabled !== false;
   el("hotTgl").checked = !!s.hot_switch;
   el("safeModeTgl").checked = !!s.safe_mode;
+  el("quotaNotifyTgl").checked = s.quota_notify !== false;
+  el("autoBackupTgl").checked = s.auto_backup !== false;
+  el("updateNotifyTgl").checked = s.update_notify !== false;
   el("startMinTgl").checked = !!s.start_minimized;
   if (force || ae !== el("closeActionSel")) el("closeActionSel").value = s.close_action || "tray";
   if (force || ae !== el("zcPath")) el("zcPath").value = s.zcode_path || "";
@@ -1147,6 +1196,39 @@ function submitRename() {
     if (r && r.ok) { pushToast(t("t_rename_saved", {x: v}), "ok"); refreshAll(false, null, null); }
     else pushToast(t("t_rename_fail", {e: (r && r.error) || "?"}), "bad");
   }).catch(function(e) { hideModal("renameModal"); pushToast(t("t_rename_fail", {e: errText(e)}), "bad"); });
+}
+function setFilter(f) {
+  S.filter = f;
+  document.querySelectorAll("#filterChips .fchip").forEach(function(b) {
+    b.classList.toggle("on", b.getAttribute("data-filter") === f);
+  });
+  renderList();
+}
+function togglePin(key) {
+  if (S.pins[key]) delete S.pins[key]; else S.pins[key] = true;
+  savePins();
+  renderList();
+}
+function doTags(key) {
+  var p = profileByKey(key);
+  if (!p) return;
+  S.tagKey = key;
+  el("tagInput").value = (p.tags || []).join(", ");
+  openModal("tagModal", "#tagInput");
+  setTimeout(function() { try { el("tagInput").focus(); } catch(e) {} }, 60);
+}
+function submitTags() {
+  if (!S.tagKey) { hideModal("tagModal"); return; }
+  var key = S.tagKey;
+  var tags = el("tagInput").value.split(",").map(function(s) { return s.trim(); }).filter(Boolean);
+  api("set_profile_tags", { key: key, tags: tags }).then(function(r) {
+    hideModal("tagModal");
+    if (!r || r.ok === false) { pushToast(t("tags_fail", {e: (r && r.error) || "?"}), "bad"); return; }
+    var p = profileByKey(key);
+    if (p) p.tags = r.tags || [];
+    pushToast(t("tags_saved"), "ok");
+    renderList();
+  }).catch(function(e) { hideModal("tagModal"); pushToast(t("tags_fail", {e: errText(e)}), "bad"); });
 }
 function doKill() {
   askConfirm(t("kill"), t("kill_confirm") || "", t("kill")).then(function(ok) {
@@ -1309,6 +1391,9 @@ function showBak() {
   el("bakActions").hidden = true;
   el("bakPwd").value = "";
   el("impPwd").value = "";
+  el("bakPreview").hidden = true;
+  el("bakPreview").innerHTML = "";
+  S.pendingImport = null;
   openModal("bakModal", "#bakPwd");
 }
 function doExport() {
@@ -1323,17 +1408,44 @@ function doExport() {
     pushToast(t("exported", {n: r.accounts}), "ok");
   }).catch(function(e) { el("bakStatus").textContent = t("export_fail", {e: errText(e)}); });
 }
-function doImport() {
+function previewImport() {
   var p = el("impPath").value.trim().replace(/^"|"$/g, "");
   var pwd = el("impPwd").value;
   if (!p || !pwd) { pushToast(t("t_fill_both"), "bad"); return; }
   el("bakStatus").textContent = "…";
-  api("import_bundle", { path: p, password: pwd }).then(function(r) {
+  el("bakPreview").hidden = true;
+  api("inspect_bundle", { path: p, password: pwd }).then(function(r) {
+    if (!r || r.ok === false) { el("bakStatus").textContent = t("import_preview_fail", {e: (r && r.error) || "?"}); return; }
+    if (!r.count) { el("bakStatus").textContent = t("import_none"); return; }
+    S.pendingImport = { path: p, password: pwd };
+    var newN = (r.accounts || []).filter(function(a) { return a.has_token && !a.duplicate; }).length;
+    var rows = (r.accounts || []).map(function(a) {
+      var badge = !a.has_token ? '<span class="tag expired">' + esc(t("preview_invalid")) + '</span>'
+        : a.duplicate ? '<span class="tag warn">' + esc(t("preview_dup")) + '</span>'
+        : '<span class="tag cur">' + esc(t("preview_new")) + '</span>';
+      var rl = a.needs_relogin ? '<span class="tag expired">' + esc(t("preview_relogin")) + '</span>' : "";
+      return '<div class="preview-row"><span class="preview-name">' + esc(a.label || "?") + '</span>' + badge + rl + '</div>';
+    }).join("");
+    var box = el("bakPreview");
+    box.innerHTML = '<div class="preview-sum">' + esc(t("import_preview_hint", {n: newN, d: r.duplicates, r: r.relogin})) + '</div>'
+      + rows + '<div class="field-hint">' + esc(t("import_confirm_hint")) + '</div>'
+      + '<button class="camp-btn" data-action="bak-import-confirm">' + esc(t("import_confirm")) + '</button>';
+    box.hidden = false;
+    el("bakStatus").textContent = "";
+  }).catch(function(e) { el("bakStatus").textContent = t("import_preview_fail", {e: errText(e)}); });
+}
+function confirmImport() {
+  var pi = S.pendingImport;
+  if (!pi) return;
+  el("bakStatus").textContent = "…";
+  api("import_bundle", { path: pi.path, password: pi.password }).then(function(r) {
     if (!r || r.ok === false) { el("bakStatus").textContent = t("import_fail", {e: (r && r.error) || "?"}); return; }
     var parts = [t("import_done", {n: r.added})];
     if (r.skipped) parts.push(t("import_skipped", {n: r.skipped}));
     if (r.relogin) parts.push(t("import_relogin", {n: r.relogin}));
     el("bakStatus").textContent = parts.join(" · ");
+    el("bakPreview").hidden = true;
+    S.pendingImport = null;
     pushToast(t("import_done", {n: r.added}), "ok");
     refreshAll(false);
   }).catch(function(e) { el("bakStatus").textContent = t("import_fail", {e: errText(e)}); });
@@ -1344,9 +1456,37 @@ function bakBrowse() {
     .catch(function(e) { pushToast(errText(e), "bad"); });
 }
 function cfgBrowseExe() {
-  invoke("plugin:dialog|open", { options: { multiple: false, directory: false, filters: [{ name: "ZCode", extensions: ["exe"] }] } })
+  invoke("plugin:dialog|open", { options: { multiple: false, filters: [{ name: "ZCode", extensions: ["exe"] }] } })
     .then(function(p) { if (p) el("zcPath").value = Array.isArray(p) ? p[0] : p; })
     .catch(function(e) { pushToast(errText(e), "bad"); });
+}
+function backupNow() {
+  api("backup_now").then(function(r) {
+    if (r && r.ok) pushToast(t("backup_done", {n: r.profiles || 0}), "ok");
+    else pushToast(t("backup_fail", {e: (r && r.error) || "?"}), "bad");
+  }).catch(function(e) { pushToast(t("backup_fail", {e: errText(e)}), "bad"); });
+}
+function saveDialog(defaultPath, name, ext) {
+  return invoke("plugin:dialog|save", { options: { defaultPath: defaultPath, filters: [{ name: name, extensions: [ext] }] } })
+    .then(function(p) { return Array.isArray(p) ? p[0] : p; });
+}
+function exportDiagnostics() {
+  saveDialog("zcode-hub-diagnostics.json", "JSON", "json").then(function(p) {
+    if (!p) return;
+    return api("export_diagnostics", { path: p }).then(function(r) {
+      if (r && r.ok) pushToast(t("diag_done"), "ok");
+      else pushToast(t("diag_fail", {e: (r && r.error) || "?"}), "bad");
+    });
+  }).catch(function(e) { pushToast(t("diag_fail", {e: errText(e)}), "bad"); });
+}
+function exportHistory() {
+  saveDialog("zcode-hub-claim-history.json", "JSON", "json").then(function(p) {
+    if (!p) return;
+    return api("export_claim_history", { path: p }).then(function(r) {
+      if (r && r.ok) pushToast(t("history_export_done", {n: r.count || 0}), "ok");
+      else pushToast(t("history_export_fail", {e: (r && r.error) || "?"}), "bad");
+    });
+  }).catch(function(e) { pushToast(t("history_export_fail", {e: errText(e)}), "bad"); });
 }
 
 /* ---------------- settings modal / update / history ---------------- */
@@ -1355,6 +1495,10 @@ function showCfg() {
   openModal("cfgModal", '[data-action="cfg-checkupdate"]');
   api("get_state").then(function(st) {
     S.st = st; syncForm(true); renderAll();
+    if (st.update_available && st.update_available.latest) {
+      el("updTxt").innerHTML = esc(t("update_banner", {v: st.update_available.latest})) + ' '
+        + '<button class="linkbtn" data-action="install-update">' + esc(t("install_upd")) + '</button>';
+    }
   }).catch(function() {});
 }
 function doCheckUpdate() {
@@ -1481,16 +1625,25 @@ document.addEventListener("click", function(e) {
     case "cfg-openzdata": invoke("open_zcode_data_dir").catch(function() {}); break;
     case "cfg-kill": doKill(); break;
     case "cfg-history": showHistory(); break;
+    case "cfg-backup": backupNow(); break;
+    case "cfg-diag": exportDiagnostics(); break;
     case "bak-export": doExport(); break;
-    case "bak-import": doImport(); break;
+    case "bak-import": previewImport(); break;
+    case "bak-import-confirm": confirmImport(); break;
     case "bak-browse": bakBrowse(); break;
     case "bak-reveal": if (S.exportPath) invoke("reveal_file", { path: S.exportPath }).catch(function(e) { pushToast(errText(e), "bad"); }); break;
     case "bak-close": hideModal("bakModal"); break;
     case "history-close": hideModal("historyModal"); break;
+    case "history-export": exportHistory(); break;
+    case "filter": setFilter(elt.getAttribute("data-filter") || "all"); break;
     case "confirm-ok": resolveConfirm(true); break;
     case "confirm-cancel": resolveConfirm(false); break;
     case "rename-ok": submitRename(); break;
     case "rename-cancel": hideModal("renameModal"); break;
+    case "tags-ok": submitTags(); break;
+    case "tags-cancel": hideModal("tagModal"); break;
+    case "pin": togglePin(key); break;
+    case "tags": doTags(key); break;
     case "foldhead": case "foldchev":
       var fp = profileByKey(key);
       if (fp) setFold(key, !isFolded(fp));
@@ -1522,6 +1675,13 @@ document.addEventListener("click", function(e) {
   }
 });
 
+document.addEventListener("input", function(e) {
+  if (e.target && e.target.id === "acctSearch") {
+    S.query = e.target.value;
+    renderList();
+  }
+});
+
 document.addEventListener("change", function(e) {
   var id = e.target.id;
   if (id === "autoCheckSel") saveSettings({ minutes: Number(e.target.value) }, true).catch(function() {});
@@ -1539,6 +1699,9 @@ document.addEventListener("change", function(e) {
   else if (id === "closeActionSel") saveSettings({ closeAction: e.target.value }, true).catch(function() {});
   else if (id === "hotTgl") saveSettings({ hotSwitch: !!e.target.checked }, true).catch(function() {});
   else if (id === "safeModeTgl") saveSettings({ safeMode: !!e.target.checked }, true).catch(function() {});
+  else if (id === "quotaNotifyTgl") saveSettings({ quotaNotify: !!e.target.checked }, true).catch(function() {});
+  else if (id === "autoBackupTgl") saveSettings({ autoBackup: !!e.target.checked }, true).catch(function() {});
+  else if (id === "updateNotifyTgl") saveSettings({ updateNotify: !!e.target.checked }, true).catch(function() {});
   else if (id === "langSel") setLang(e.target.value);
   else if (id === "sortSel") {
     S.sort = e.target.value;
@@ -1575,6 +1738,7 @@ document.addEventListener("keydown", function(e) {
 })();
 
 /* ---------------- boot ---------------- */
+window.__hubRefresh = function() { refreshAll(false, null, null); };
 applyLang();
 applyTheme((function() { try { return localStorage.getItem("hub-theme") || "system"; } catch(e) { return "system"; } })());
 if (window.matchMedia) {

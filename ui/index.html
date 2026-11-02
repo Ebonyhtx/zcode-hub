@@ -33,6 +33,8 @@
   <symbol id="i-info" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/><path d="M8 7.2v4M8 5v.2"/></symbol>
   <symbol id="i-folder" viewBox="0 0 16 16"><path d="M2 4.5h4.2l1.3 1.6H14v6.4H2z"/><path d="M2 7.6h12"/></symbol>
   <symbol id="i-history" viewBox="0 0 16 16"><path d="M3 8a5 5 0 1 0 1.7-3.8L3 6"/><path d="M3 3v3h3M8 5.5V8l2 1.3"/></symbol>
+  <symbol id="i-pin" viewBox="0 0 16 16"><path d="M9.5 2.5 13.5 6.5 12 8l-1-.2-2.3 2.3.3 2.2-1 1-2-2-2.5 2.5-.8.3.3-.8L5.5 11l-2-2 1-1 2.2.3L9 5.9 8.8 5z"/></symbol>
+  <symbol id="i-tag" viewBox="0 0 16 16"><path d="M2.5 2.5h5l6 6-5 5-6-6z"/><circle cx="5.8" cy="5.8" r="1.1"/></symbol>
 </svg>
 
 <div class="tbar">
@@ -70,6 +72,19 @@
       <span class="grow"></span>
       <button class="chkbtn" id="chkBtn" data-action="checkall"><svg class="icon"><use href="#i-search"/></svg><span data-i18n="check_all"></span></button>
       <button class="icon-btn" id="refreshBtn" data-action="refresh" data-i18n-aria="refresh" aria-label="Refresh"><svg class="icon"><use href="#i-refresh"/></svg></button>
+    </div>
+  </div>
+
+  <div class="filterbar">
+    <div class="searchwrap">
+      <svg class="icon"><use href="#i-search"/></svg>
+      <input id="acctSearch" type="search" data-i18n-ph="search_ph" autocomplete="off">
+    </div>
+    <div class="chips" id="filterChips">
+      <button class="fchip on" data-action="filter" data-filter="all" data-i18n="filter_all"></button>
+      <button class="fchip" data-action="filter" data-filter="current" data-i18n="filter_current"></button>
+      <button class="fchip" data-action="filter" data-filter="benefits" data-i18n="filter_benefits"></button>
+      <button class="fchip" data-action="filter" data-filter="expired" data-i18n="filter_expired"></button>
     </div>
   </div>
 
@@ -161,10 +176,15 @@
     <div class="mline"><span class="mlbl" data-i18n="hot"></span><label class="tgl"><input type="checkbox" id="hotTgl"><i></i><span class="sr-only" data-i18n="hot"></span></label><span class="mut" data-i18n="hot_hint"></span></div>
     <div class="hotnote" data-i18n="hot_note"></div>
     <div class="mline"><span class="mlbl" data-i18n="safe_mode"></span><label class="tgl"><input type="checkbox" id="safeModeTgl"><i></i><span class="sr-only" data-i18n="safe_mode"></span></label><span class="mut" data-i18n="safe_hint"></span></div>
+    <div class="mline"><span class="mlbl" data-i18n="quota_notify"></span><label class="tgl"><input type="checkbox" id="quotaNotifyTgl"><i></i><span class="sr-only" data-i18n="quota_notify"></span></label><span class="mut" data-i18n="quota_notify_hint"></span></div>
+    <div class="mline"><span class="mlbl" data-i18n="auto_backup"></span><label class="tgl"><input type="checkbox" id="autoBackupTgl"><i></i><span class="sr-only" data-i18n="auto_backup"></span></label><span class="mut" data-i18n="auto_backup_hint"></span></div>
+    <div class="mline"><span class="mlbl" data-i18n="update_notify"></span><label class="tgl"><input type="checkbox" id="updateNotifyTgl"><i></i><span class="sr-only" data-i18n="update_notify"></span></label><span class="mut" data-i18n="update_notify_hint"></span></div>
     <div class="mline"><span class="mlbl" data-i18n="lang"></span><select id="langSel"><option value="zh">中文</option><option value="en">English</option></select></div>
     <div class="mline">
       <button class="camp-btn danger" data-action="cfg-kill"><svg class="icon"><use href="#i-power"/></svg><span data-i18n="kill"></span></button>
       <button class="camp-btn" data-action="cfg-history"><svg class="icon"><use href="#i-history"/></svg><span data-i18n="claim_history"></span></button>
+      <button class="camp-btn" data-action="cfg-backup"><svg class="icon"><use href="#i-archive"/></svg><span data-i18n="backup_now"></span></button>
+      <button class="camp-btn" data-action="cfg-diag"><svg class="icon"><use href="#i-info"/></svg><span data-i18n="diagnostics"></span></button>
     </div>
     <div class="mfoot"><span></span><button class="cancel" data-action="cfg-close" data-i18n="close"></button></div>
   </div>
@@ -188,8 +208,9 @@
     </div>
     <div class="mline">
       <input id="impPwd" type="password" class="min" data-i18n-ph="imp_pwd_ph">
-      <button class="camp-btn" data-action="bak-import" data-i18n="import_btn"></button>
+      <button class="camp-btn" data-action="bak-import" data-i18n="import_preview_btn"></button>
     </div>
+    <div class="bak-preview" id="bakPreview" hidden></div>
     <div class="mstatus" id="bakStatus" role="status"></div>
     <div class="mactions" id="bakActions" hidden>
       <button class="linkbtn" data-action="bak-reveal" data-i18n="open_folder"></button>
@@ -216,7 +237,7 @@
     <h3 id="historyTitle" data-i18n="claim_history_title"></h3>
     <div class="sub" data-i18n="claim_history_sub"></div>
     <div class="history-list" id="historyList"></div>
-    <div class="mfoot"><span></span><button class="cancel" data-action="history-close" data-i18n="close"></button></div>
+    <div class="mfoot"><button class="linkbtn" data-action="history-export" data-i18n="history_export"></button><span></span><button class="cancel" data-action="history-close" data-i18n="close"></button></div>
   </div>
 </div>
 
@@ -225,10 +246,23 @@
   <div class="mbox" role="dialog" aria-modal="true" aria-labelledby="renameTitle">
     <h3 id="renameTitle" data-i18n="rename_title"></h3>
     <div class="sub" data-i18n="rename_sub"></div>
-    <div class="mline"><input id="renameInput" type="text" class="min wide" maxlength="80" data-i18n-ph="rename_ph"></div>
+    <input id="renameInput" type="text" class="min" data-i18n-ph="rename_ph">
     <div class="mfoot">
       <button class="cancel" data-action="rename-cancel" data-i18n="cancel"></button>
       <button class="camp-btn" data-action="rename-ok" data-i18n="save"></button>
+    </div>
+  </div>
+</div>
+
+<!-- Tags -->
+<div class="overlay" id="tagModal" hidden>
+  <div class="mbox" role="dialog" aria-modal="true" aria-labelledby="tagTitle">
+    <h3 id="tagTitle" data-i18n="tags_title"></h3>
+    <div class="sub" data-i18n="tags_sub"></div>
+    <input id="tagInput" type="text" class="min" data-i18n-ph="tags_ph">
+    <div class="mfoot">
+      <button class="cancel" data-action="tags-cancel" data-i18n="cancel"></button>
+      <button class="camp-btn" data-action="tags-ok" data-i18n="save"></button>
     </div>
   </div>
 </div>
