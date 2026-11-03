@@ -16,7 +16,7 @@ jobs:
         os: [windows-latest, ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0 (Node 24)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5.1.0 (Node 24)
       - name: Install Tauri Linux prerequisites (platform stubs still link tauri)
         if: runner.os == 'Linux'
         run: |
@@ -45,7 +45,7 @@ jobs:
   ui-e2e:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0 (Node 24)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5.1.0 (Node 24)
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0 (Node 24)
         with:
           node-version: 24
@@ -69,7 +69,7 @@ jobs:
   security:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0 (Node 24)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5.1.0 (Node 24)
       - name: Dependency policy (RustSec advisories, licenses, bans, sources)
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
@@ -79,7 +79,7 @@ jobs:
   secret-scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0 (Node 24)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5.1.0 (Node 24)
         with:
           fetch-depth: 0
       - name: Scan full history for secrets
