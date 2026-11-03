@@ -10,8 +10,58 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  verify:
+    timeout-minutes: 30
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0 (Node 24)
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      # Tags must point at a commit already merged to main; never release an
+      # unreviewed branch commit.
+      - name: Require tag commit to be on main
+        shell: bash
+        run: |
+          git fetch origin main --depth=50
+          commit=$(git rev-parse "${GITHUB_SHA}^{commit}")
+          git merge-base --is-ancestor "$commit" origin/main
+
+      - name: Install Rust (pinned)
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch (pinned 2026-11-03)
+        with:
+          toolchain: "1.97.1"
+          components: clippy, rustfmt
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: src-tauri
+
+      - name: Format check
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+
+      - name: Clippy (warnings are errors)
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: Unit tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+  security:
+    timeout-minutes: 15
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0 (Node 24)
+      - name: Dependency policy (RustSec advisories, licenses, bans, sources)
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          manifest-path: src-tauri/Cargo.toml
+          arguments: --all-features
+
   build:
     timeout-minutes: 60
+    needs: [verify, security]
     runs-on: windows-latest
     permissions:
       contents: write
@@ -28,8 +78,10 @@ jobs:
         shell: bash
         run: bash scripts/repo-check.sh
 
-      - name: Install Rust (stable)
+      - name: Install Rust (pinned)
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch (pinned 2026-11-03)
+        with:
+          toolchain: "1.97.1"
 
       - name: Rust cache
         uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
