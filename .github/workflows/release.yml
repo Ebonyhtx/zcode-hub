@@ -5,8 +5,13 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
+    timeout-minutes: 60
     runs-on: windows-latest
     permissions:
       contents: write
