@@ -91,7 +91,7 @@
 
 ## 测试策略
 
-- **Rust 单测**（各模块底部的 `mod tests`，共 83 个）：
+- **Rust 单测**（各模块底部的 `mod tests`，共 84 个）：
   加密往返与布局守护、畸形 IV 拒绝、路径穿越、JWT 过期、marketing/preview 解析、原子写入、
   字段合并与 carry-over、按账号键清理、版本关系判定、存档陈旧判定、热切换验证回路、历史追加/裁剪、审计轮转、崩溃日志轮转与路径脱敏、
   备份完整性校验与恢复目标解析、验证码回环、KDF —— 纯函数优先，不碰真实凭据
@@ -104,9 +104,9 @@
 - **回归测试**：通知触发条件（开关/有无福利/手动托盘检测/失败数）、领取后活动乐观移除、
   验证码大 body/错误 Origin、额度历史缓存失效、畸形 IV、合并保留客户端字段等
 - **前端检查**：`node --check ui/app.js` + I18N zh/en 键集合一致性（CI 门禁）
-- **Playwright 功能 E2E**（25 例，真实页面 + `__TAURI_INTERNALS__` mock IPC）：主题/折叠/搜索筛选/
+- **Playwright 功能 E2E**（28 例，真实页面 + `__TAURI_INTERNALS__` mock IPC）：主题/折叠/搜索筛选/
   置顶/标签/设置持久化/导入预览/领取历史/备份目录/备份选择恢复/领取状态机
-  （preparing → waiting_captcha → claiming → success，含失败分支）/前端错误上报/存档陈旧与刷新/客户端版本展示/切换模式文案/响应式列数
+  （preparing → waiting_captcha → claiming → success，含失败分支）/前端错误上报/存档陈旧与刷新/客户端版本展示/切换模式文案/严格模式与热切换互斥/响应式列数
 - **无障碍检查**：axe（WCAG 2.0 A/AA）扫主界面与设置、备份弹窗；`color-contrast` 规则因主题色
   由设计规范控制而单独人工核验。当前发现并修复了 4 个 `<select>` 缺少可访问名称的问题
   （`data-i18n-aria` 随语言切换更新）
@@ -142,7 +142,12 @@
 5. **存档新鲜度可见**：`meta.json` 记录抓取时的 `client_version` 与 `field_count`。
    同版本下字段更少 = 存档落后，卡片显示「旧 x.y.z」，当前账号可一键刷新
    （非当前账号由下次切换时的 `preserve_current_login` 自动刷新）。
+   v1.11.0 之前写的存档没有 `client_version`，升级后由 `backfill_snapshot_field_counts`
+   按快照实际键数补一次 `field_count`（**只读快照，不重新抓取**），标签从升级当刻就有效；
+   版本未知时陈旧判定退回纯字段数比较。
 6. **live 不可读的两种态度**：普通模式留档为 `.corrupt` 后继续；严格模式直接拒绝。
+7. **严格模式与热切换互斥**：严格模式要求客户端完全重新初始化，后端忽略热切换
+   （`want_hot && !strict_requested`）；UI 同步禁用热切换开关并说明原因，不让用户误以为它还生效。
 
 ## 前端约定
 

@@ -62,6 +62,7 @@ var I18N = {
     close_action: "关闭窗口时", close_tray: "最小化到托盘", close_quit: "退出程序",
     hot: "热切换（实验）", hot_hint: "不重启客户端直接换号，失败自动回退", hot_note: "热切换不重启客户端：套餐与额度立即按新账号生效，但左下角账号名来自客户端本地缓存，需重启 ZCode 才会更新。",
     safe_mode: "严格模式", safe_hint: "当前凭据缺失或结构异常时拒绝切换，而不是留档后继续", lang: "语言",
+    hot_blocked_by_strict: "严格模式已开启：切换必然重启客户端，热切换不生效", strict_overrides_hot: "开启严格模式后会关闭热切换（严格模式要求客户端重新初始化）",
     kill: "关闭 ZCode", claim_history: "领取历史", claim_history_title: "领取历史", claim_history_sub: "只记录本机领取的套餐与时间，不含账号信息。", no_claim_history: "暂无领取记录",
     bak_title: "备份 / 导入账号库", bak_sub: "备份文件用口令加密（PBKDF2 + AES-256-GCM），可在其他电脑导入恢复；口令丢失无法找回。",
     export_to: "导出到桌面", bak_ph: "设置口令（至少 6 位）", export_btn: "导出 .zhb", import_from: "从文件导入",
@@ -139,6 +140,7 @@ var I18N = {
     close_action: "When closing", close_tray: "Minimize to tray", close_quit: "Quit app",
     hot: "Hot switch (exp.)", hot_hint: "Switch without restarting; falls back on failure", hot_note: "Hot switch keeps the client running: plan and quota apply immediately, but the bottom-left account name comes from the client cache and only updates after restarting ZCode.",
     safe_mode: "Strict mode", safe_hint: "Refuse to switch when the live credentials are missing or malformed, instead of archiving them and continuing", lang: "Language",
+    hot_blocked_by_strict: "Strict mode is on: switching always restarts the client, so hot switch has no effect", strict_overrides_hot: "Turning on strict mode disables hot switch (strict mode requires a client re-init)",
     kill: "Close ZCode", claim_history: "Claim history", claim_history_title: "Claim history", claim_history_sub: "Only plans and times claimed on this machine; no account identifiers.", no_claim_history: "No claims yet",
     bak_title: "Backup / Import accounts", bak_sub: "Bundles are password-encrypted (PBKDF2 + AES-256-GCM) and portable across machines; a lost password cannot be recovered.",
     export_to: "Export to Desktop", bak_ph: "Set a password (at least 6 chars)", export_btn: "Export .zhb", import_from: "Import from file",
@@ -1129,6 +1131,7 @@ function syncForm(force) {
   el("notifyTgl").checked = s.notify_enabled !== false;
   el("hotTgl").checked = !!s.hot_switch;
   el("safeModeTgl").checked = !!s.safe_mode;
+  syncModeExclusivity();
   el("quotaNotifyTgl").checked = s.quota_notify !== false;
   el("autoBackupTgl").checked = s.auto_backup !== false;
   el("updateNotifyTgl").checked = s.update_notify !== false;
@@ -1138,16 +1141,44 @@ function syncForm(force) {
   if (force || ae !== el("langSel")) el("langSel").value = LANG;
   el("autoStartTgl").checked = !!S.st.autostart;
   el("cfgVer").textContent = "v" + (S.st.version || "?");
-  // 版本只在设置页显示（顶部不弹条）：未验证只是信息，不是故障
+  /* 版本只在设置页显示（顶部不弹条）：未验证只是信息，不是故障
+     zcode_version 可能带四段（PowerShell ProductVersion 原文），显示截断为 x.y.z */
   var cp = S.st.compat || {};
   var vtxt = "";
   if (cp.zcode_version) {
-    vtxt = "ZCode v" + cp.zcode_version;
+    // PowerShell 的 ProductVersion 是四段（3.17.2.9661），版本语义只到 x.y.z
+    vtxt = "ZCode v" + String(cp.zcode_version).split(".").slice(0, 3).join(".");
     if (cp.version_status && cp.version_status !== "match") {
       vtxt += "（" + t("zcode_unverified") + "，" + t("zcode_verified", {v: cp.verified_version || "?"}) + "）";
     }
   }
   el("zcodeVer").textContent = vtxt;
+}
+
+/* 严格模式要求客户端完全重新初始化，所以与热切换互斥。
+   后端会静默忽略热切换（identity.rs: want_hot && !strict_requested），
+   这里必须把这个事实摆到界面上，而不是让用户以为热切换还开着。 */
+function syncModeExclusivity() {
+  var strict = !!el("safeModeTgl").checked;
+  var hotBox = el("hotTgl");
+  var hotWrap = el("hotTglWrap");
+  var hotHint = el("hotHint");
+  // 严格模式开启时不允许热切换
+  hotBox.disabled = strict;
+  if (hotWrap) hotWrap.classList.toggle("tgl-disabled", strict);
+  if (hotHint) {
+    hotHint.textContent = strict ? t("hot_blocked_by_strict") : t("hot_hint");
+    hotHint.classList.toggle("warn", strict);
+  }
+  // 反向：热切换开着时，提示开严格模式会关闭它（不是禁用，允许用户主动切换策略）
+  var safeHint = el("safeHint");
+  if (safeHint && !strict && hotBox.checked) {
+    safeHint.textContent = t("strict_overrides_hot");
+    safeHint.classList.add("warn");
+  } else if (safeHint) {
+    safeHint.textContent = t("safe_hint");
+    safeHint.classList.remove("warn");
+  }
 }
 function saveSettings(patch, quiet) {
   return api("set_settings", settingsBody(patch)).then(function(r) {
@@ -1686,6 +1717,8 @@ function applyLang() {
   });
   var ls = el("langSel");
   if (ls) ls.value = LANG;
+  // data-i18n 把提示重置成原文了，互斥说明要重新套上
+  syncModeExclusivity();
   if (S.st) { renderAll(); }
 }
 function setLang(l) {
@@ -1826,8 +1859,8 @@ document.addEventListener("change", function(e) {
   }
   else if (id === "startMinTgl") saveSettings({ startMinimized: !!e.target.checked }, true).catch(function() {});
   else if (id === "closeActionSel") saveSettings({ closeAction: e.target.value }, true).catch(function() {});
-  else if (id === "hotTgl") saveSettings({ hotSwitch: !!e.target.checked }, true).catch(function() {});
-  else if (id === "safeModeTgl") saveSettings({ safeMode: !!e.target.checked }, true).catch(function() {});
+  else if (id === "hotTgl") { saveSettings({ hotSwitch: !!e.target.checked }, true).then(syncModeExclusivity).catch(function() {}); }
+  else if (id === "safeModeTgl") { saveSettings({ safeMode: !!e.target.checked }, true).then(syncModeExclusivity).catch(function() {}); }
   else if (id === "quotaNotifyTgl") saveSettings({ quotaNotify: !!e.target.checked }, true).catch(function() {});
   else if (id === "autoBackupTgl") saveSettings({ autoBackup: !!e.target.checked }, true).catch(function() {});
   else if (id === "updateNotifyTgl") saveSettings({ updateNotify: !!e.target.checked }, true).catch(function() {});
