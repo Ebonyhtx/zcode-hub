@@ -3,6 +3,16 @@
 本文件记录 ZCode Hub 的显著变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.10.3] - 2026-11-03
+
+### 修复
+- **v1.10.2 未能发布**：Release 构建在 Windows runner 上失败——`release-notes.sh` 输出中文，而 runner 控制台是 cp1252，Python 抛 `UnicodeEncodeError`。脚本现显式把 stdout/stderr 重配为 UTF-8
+- `coverage-gate.py` 同样固定 UTF-8 输出，并把「读不到 LCOV 文件」从 traceback 改为一行可读报错（否则 CI 上真正的失败原因会被编码错误盖住）
+
+### 安全与工程
+- 新增 `scripts/scripts-selftest.sh`：在 `PYTHONIOENCODING=cp1252` 下实跑脚本，模拟 Windows runner 的非 UTF-8 控制台；已接入 CI `secret-scan` job
+- Release workflow 的「提取 Release 说明」提前到 `verify` job，编码或段落问题在开始构建安装包之前就失败
+
 ## [1.10.2] - 2026-11-03
 
 ### 新增

@@ -48,6 +48,15 @@ jobs:
       - name: Unit tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
+      # 提前跑：Release 说明来自 CHANGELOG，一旦提取失败就没必要再花时间构建安装包。
+      # Windows runner 的控制台默认 cp1252，这里同时验证中文输出不会崩（v1.10.2 踩过）。
+      - name: Extract release notes from CHANGELOG
+        shell: bash
+        run: |
+          bash scripts/release-notes.sh > "$RUNNER_TEMP/release-notes.md"
+          echo "--- first lines ---"
+          head -n 5 "$RUNNER_TEMP/release-notes.md"
+
   security:
     timeout-minutes: 15
     runs-on: ubuntu-24.04
@@ -112,7 +121,8 @@ jobs:
           }
           $json | ConvertTo-Json -Depth 5 | Set-Content "src-tauri/target/release/bundle/nsis/latest.json" -Encoding utf8
 
-      # Release 说明取自 CHANGELOG 的对应版本段落（可审阅），不用 commit 标题现凑
+      # Release 说明取自 CHANGELOG 的对应版本段落（可审阅），不用 commit 标题现凑。
+      # verify job 已经跑过一次；这里重新生成到工作目录供 action-gh-release 使用。
       - name: Extract release notes from CHANGELOG
         shell: bash
         run: bash scripts/release-notes.sh > release-notes.md
