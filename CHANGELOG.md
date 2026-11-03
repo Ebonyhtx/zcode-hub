@@ -3,6 +3,11 @@
 本文件记录 ZCode Hub 的显著变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.10.4] - 2026-11-03
+
+### 修复
+- `SHA256SUMS.txt` 里的安装包名与 GitHub 资产名不一致：上传时 GitHub 把文件名中的空格替换为点号（`ZCode.Hub_…`），而清单里写的是带空格的原始名，用户执行 `sha256sum -c SHA256SUMS.txt` 会报找不到文件。清单现按资产名生成，v1.10.3 的安装包本体和 `latest.json` 均不受影响
+
 ## [1.10.3] - 2026-11-03
 
 ### 修复
