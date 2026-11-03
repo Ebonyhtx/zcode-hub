@@ -3,6 +3,19 @@
 本文件记录 ZCode Hub 的显著变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.10.1] - 2026-11-03
+
+### 新增
+- 设置 →「备份目录」：显示备份份数与最近备份时间，可直接打开目录
+- 「恢复最近备份」：恢复前自动再做一份安全备份，失败自动回滚；备份完成 Toast 也提供打开目录入口
+
+### 安全与工程
+- Release 发布前强制校验：tag 必须指向 main 上的提交，并运行 fmt / clippy / 单元测试 / cargo-deny
+- 固定 Rust 工具链 `1.97.1`（`rust-toolchain.toml`），发布产物更可复现
+- CI 固定 `ubuntu-24.04`，缓存 Playwright 浏览器，新增每周 LCOV 覆盖率报告
+- Dependabot 按 minor/patch 分组、忽略 Actions 大版本自动升级，合并后自动删除分支
+- 依赖安全例外：`glib` GHSA-wrw7-89jp-8q8g 按 Linux-only / 不在执行路径归档，Tauri 升级到 GTK 0.20 后移除
+
 ## [1.10.0] - 2026-11-03
 
 ### 新增

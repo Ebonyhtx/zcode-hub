@@ -47,7 +47,7 @@ Grab `ZCode Hub_x.x.x_x64-setup.exe` from [Releases](../../releases). Windows 10
 | To tray | Titlebar ✕ follows the close behavior setting (tray or quit); real exit = tray icon → Quit |
 | Find an account | Search box + filter chips; pin from the card, edit tags from the tag button |
 | Switch without opening | Tray → Quick switch, or `Ctrl+Shift+Z` to toggle the window |
-| Recover / migrate | Settings → "Back up now" for a local restore point; use `.zhb` for cross-machine migration |
+| Recover / migrate | Settings → "Back up now" for a local restore point; "Restore latest" rolls back (a safety backup is created first); use `.zhb` for cross-machine migration |
 
 ## Security model
 
