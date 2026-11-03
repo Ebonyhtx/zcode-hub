@@ -137,7 +137,8 @@ jobs:
           upload-artifact: false
           upload-release-assets: false
 
-      # 必须排在 SBOM 之后：否则 .spdx.json 还没生成，校验和会漏掉它
+      # 必须排在 SBOM 之后：否则 .spdx.json 还没生成，校验和会漏掉它。
+      # 名称必须与 GitHub 资产名一致：上传时空格会变成点号，否则 sha256sum -c 找不到文件。
       - name: Write SHA-256 checksums
         shell: pwsh
         run: |
@@ -148,7 +149,9 @@ jobs:
           if (-not $files) { throw "no release artifacts found in $dir" }
           $lines = foreach ($f in $files) {
             $hash = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower()
-            "$hash  $($f.Name)"
+            # GitHub 资产名把空格替换成 '.'
+            $assetName = $f.Name.Replace(' ', '.')
+            "$hash  $assetName"
           }
           # 统一换行，避免 git/编辑器差异影响校验工具
           ($lines -join "`n") + "`n" | Set-Content "$dir/SHA256SUMS.txt" -Encoding ascii -NoNewline
