@@ -215,27 +215,34 @@ mod tests {
         assert_eq!(version_status("3.x.1", "3.17.2"), Unknown);
     }
 
+    /// 版本差异只做提示，绝不进 errors——与机器上装了什么无关。
+    /// （旧版这个用例断言"notes 里没有'版本'字样"，在没装客户端的 CI runner 上必挂：
+    /// 那种情况下会加一条"未检测到 ZCode 客户端版本"。这里改为断言真正的不变量。）
     #[test]
     fn version_mismatch_is_a_note_not_an_error() {
-        // 版本差异只做提示：probe 的 errors 只装结构性异常
         let v = json!({"zcodejwttoken": "enc:v1:a.b.c"});
         let report = compat_report(Some(&v));
-        let notes = report["notes"].as_array().unwrap();
         let errors = report["errors"].as_array().unwrap();
         assert!(
-            !notes
-                .iter()
-                .any(|n| n.as_str().unwrap_or("").contains("版本")),
-            "本机版本若匹配则不应有版本提示"
+            errors.is_empty(),
+            "版本与未知字段都不该产生 error: {:?}",
+            errors
         );
-        assert!(errors.is_empty(), "未知字段不应产生 error");
         assert_eq!(report["verified_version"], json!(VERIFIED_CLIENT_VERSION));
-        // version_status 字段存在且是已知取值之一
         let st = report["version_status"].as_str().unwrap();
         assert!(
             ["match", "newer", "older", "unknown"].contains(&st),
             "意外状态: {}",
             st
         );
+        // 若检测到版本，state 必须与 version_status 判定一致
+        match report["zcode_version"].as_str() {
+            Some(detected) => {
+                let expect = format!("{:?}", version_status(detected, VERIFIED_CLIENT_VERSION))
+                    .to_lowercase();
+                assert_eq!(st, expect);
+            }
+            None => assert_eq!(st, "unknown"),
+        }
     }
 }
