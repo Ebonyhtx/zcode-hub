@@ -148,22 +148,22 @@ pub(crate) fn stamp_snapshot_meta(meta: &mut Value, creds: &Value) {
 }
 
 /// 存档是否落后于当前 live：
-/// - 两侧都有字段数，且存档的更少；
-/// - 存档记录的客户端版本与当前一致（客户端升级后字段必然变化，不算「落后」，
-///   那种情况由切换时的合并自愈）。
+/// - 存档有字段数，且比 live 少；
+/// - **版本未知时也判**：v1.11.0 之前写的存档没有 `client_version`，但它们的字段数
+///   是升级后按快照实际内容补的（`backfill_snapshot_field_counts`），所以「字段更少」
+///   依然成立。只有明确记录了不同版本时才放过（客户端升级造成的字段差异由合并自愈）。
 pub(crate) fn snapshot_is_stale(meta: &Value, live_field_count: usize, live_version: &str) -> bool {
     let Some(archived) = meta.get("field_count").and_then(|v| v.as_u64()) else {
-        return false; // 老 meta：无据可判，不误报
+        return false; // 连字段数都没有：无据可判，不误报
     };
     let archived_ver = meta
         .get("client_version")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    if archived_ver.is_empty() {
-        return false;
-    }
-    if crate::client::version_status(archived_ver, live_version)
-        != crate::client::VersionStatus::Match
+    // 版本已知且与当前不同 → 字段差异是客户端升级造成的，交给合并自愈，不标陈旧
+    if !archived_ver.is_empty()
+        && crate::client::version_status(archived_ver, live_version)
+            != crate::client::VersionStatus::Match
     {
         return false;
     }
@@ -776,9 +776,16 @@ mod tests {
         assert!(!snapshot_is_stale(&meta("3.18.0", 5), 10, live_ver));
         // 老 meta 缺字段 → 无法判断，不误报
         assert!(!snapshot_is_stale(&json!({"label": "x"}), 10, live_ver));
-        assert!(!snapshot_is_stale(&json!({"field_count": 3}), 10, live_ver));
         assert!(!snapshot_is_stale(
             &json!({"client_version": "3.17.2"}),
+            10,
+            live_ver
+        ));
+        // 版本未知（v1.11.0 前的旧存档，backfill 只补了字段数）→ 仍按字段数判定，
+        // 否则升级后「旧」标签要等用户切换一次才会出现
+        assert!(snapshot_is_stale(&json!({"field_count": 3}), 10, live_ver));
+        assert!(!snapshot_is_stale(
+            &json!({"field_count": 10}),
             10,
             live_ver
         ));

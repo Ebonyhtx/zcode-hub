@@ -315,6 +315,38 @@ test("strict mode reports its own toast", async ({ page }) => {
   await expect(page.locator(".toasts")).toContainText("严格模式");
 });
 
+test("strict mode disables the hot switch and says why", async ({ page }) => {
+  await page.locator('[data-action="cfg"]').click();
+  await expect(page.locator("#hotTgl")).toBeEnabled();
+
+  // 打开严格模式 → 热切换被禁用并换掉说明文案
+  await page.locator('#cfgModal label.tgl:has(#safeModeTgl)').click();
+  await expect(page.locator("#hotTgl")).toBeDisabled();
+  await expect(page.locator("#hotHint")).toContainText("严格模式已开启");
+  await expect(page.locator("#hotTglWrap")).toHaveClass(/tgl-disabled/);
+
+  // 关掉严格模式 → 热切换恢复可用
+  await page.locator('#cfgModal label.tgl:has(#safeModeTgl)').click();
+  await expect(page.locator("#hotTgl")).toBeEnabled();
+  await expect(page.locator("#hotHint")).toContainText("不重启客户端");
+});
+
+test("hot switch on warns that strict mode will override it", async ({ page }) => {
+  await page.locator('[data-action="cfg"]').click();
+  await page.locator('#cfgModal label.tgl:has(#hotTgl)').click();
+  await expect(page.locator("#safeHint")).toContainText("会关闭热切换");
+});
+
+test("product version with four parts is shown as x.y.z", async ({ page }) => {
+  await page.addInitScript(() => {
+    window.__MOCK_OVERRIDES__ = { compat: { zcode_version: "3.17.2.9661" } };
+  });
+  await page.reload();
+  await page.locator('[data-action="cfg"]').click();
+  // PowerShell 的 ProductVersion 是四段，界面只显示到补丁号
+  await expect(page.locator("#zcodeVer")).toHaveText("ZCode v3.17.2");
+});
+
 test("responsive grid switches between one and two columns", async ({ page }) => {
   await page.setViewportSize({ width: 700, height: 800 });
   const one = await page.evaluate(() => getComputedStyle(document.getElementById("acctList")).gridTemplateColumns);

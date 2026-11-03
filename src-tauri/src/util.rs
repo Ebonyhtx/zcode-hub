@@ -254,6 +254,57 @@ pub(crate) fn migrate_legacy_data() {
     cleanup_transient_files();
     // 旧版本的明文账号键（邮箱/昵称）一次性改为哈希
     migrate_privacy_keys();
+    // v1.11.0 之前写的存档没有 field_count，陈旧判定无从下手 → 按快照实际键数补一次标记
+    backfill_snapshot_field_counts();
+}
+
+/// 为缺少 `field_count` 的存档按快照实际键数补写标记（**不重新抓取**，只读快照）。
+///
+/// v1.11.0 引入存档新鲜度时，旧 meta 没有这个键，`snapshot_is_stale` 会一律返回 false
+/// （避免误报）。补标记后「旧 x.y.z」标签从升级当刻就有效，不必等用户切换一次。
+/// 幂等：已有 field_count 的存档直接跳过，每次启动都可安全执行。
+pub(crate) fn backfill_snapshot_field_counts() {
+    // 解不开的存档直接跳过（卡片会显示「存档异常」），因此这里吞掉密钥错误
+    let Ok(key) = crate::crypto::snap_key() else {
+        return;
+    };
+    backfill_field_counts_in(&profiles_dir(), &key);
+}
+
+/// 可注入目录与快照密钥的实现：单测用临时目录 + 固定密钥，生产用 profiles_dir() + DPAPI 主密钥。
+/// 返回补写的存档数，便于测试断言与将来诊断。
+pub(crate) fn backfill_field_counts_in(profiles: &std::path::Path, snap_key: &[u8]) -> usize {
+    let Ok(rd) = std::fs::read_dir(profiles) else {
+        return 0;
+    };
+    let mut filled = 0;
+    for e in rd.flatten() {
+        let dir = e.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let meta_path = dir.join("meta.json");
+        let Ok(mut meta) = read_json(&meta_path) else {
+            continue;
+        };
+        if meta.get("field_count").is_some() {
+            continue;
+        }
+        // 快照解不开时跳过：这种情况卡片本来就会显示「存档异常」
+        let Ok(creds) = crate::crypto::read_snapshot_with_key(&dir, snap_key) else {
+            continue;
+        };
+        let count = creds.as_object().map(|o| o.len()).unwrap_or(0);
+        if count == 0 {
+            continue;
+        }
+        meta["field_count"] = json!(count);
+        // 版本留空 = 未知，陈旧判定仍会按字段数比较（见 snapshot_is_stale）
+        if write_json(&meta_path, &meta).is_ok() {
+            filled += 1;
+        }
+    }
+    filled
 }
 
 pub(crate) fn cleanup_transient_files() {
@@ -355,6 +406,60 @@ pub(crate) fn config_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backfill_fills_field_count_once_and_only_for_readable_snapshots() {
+        let root = std::env::temp_dir().join(format!(
+            "zhb-backfill-{}-{}",
+            std::process::id(),
+            rand::random::<u32>()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        // 1) 旧 meta（无 field_count）+ 可读快照 → 补写实际键数
+        let legacy = root.join("legacy");
+        crate::crypto::write_snapshot_with_key(
+            &legacy,
+            &json!({"zcodejwttoken": "a", "oauth:active_provider": "b", "extra": "c"}),
+            &[7u8; 32],
+        )
+        .unwrap();
+        write_json(&legacy.join("meta.json"), &json!({"label": "old"})).unwrap();
+
+        // 2) 已有 field_count → 不覆盖
+        let fresh = root.join("fresh");
+        crate::crypto::write_snapshot_with_key(&fresh, &json!({"zcodejwttoken": "a"}), &[7u8; 32])
+            .unwrap();
+        write_json(&fresh.join("meta.json"), &json!({"field_count": 99})).unwrap();
+
+        // 3) 快照缺失 → 跳过，不写假数据
+        let broken = root.join("broken");
+        std::fs::create_dir_all(&broken).unwrap();
+        write_json(&broken.join("meta.json"), &json!({"label": "x"})).unwrap();
+
+        let filled = backfill_field_counts_in(&root, &[7u8; 32]);
+        assert_eq!(filled, 1, "只应补写一个存档");
+
+        let m = read_json(&legacy.join("meta.json")).unwrap();
+        assert_eq!(m["field_count"], json!(3));
+        assert_eq!(m["label"], json!("old"), "已有字段必须保留");
+        // 版本保持未知：陈旧判定会退回纯字段数比较
+        assert!(m.get("client_version").is_none());
+
+        assert_eq!(
+            read_json(&fresh.join("meta.json")).unwrap()["field_count"],
+            json!(99),
+            "已有标记不得覆盖（幂等）"
+        );
+        assert!(read_json(&broken.join("meta.json"))
+            .unwrap()
+            .get("field_count")
+            .is_none());
+
+        // 幂等：再跑一次不该有任何补写
+        assert_eq!(backfill_field_counts_in(&root, &[7u8; 32]), 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn safe_key_blocks_traversal() {
