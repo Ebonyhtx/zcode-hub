@@ -111,6 +111,7 @@ pub(crate) fn build_report() -> Value {
         "quota": quota_summary,
         "startup_log": tail_lines(&app_data_dir().join("startup.log"), 50),
         "audit_tail": tail_lines(&crate::audit::audit_path(&app_data_dir()), 100),
+        "crash_log": crate::crash::tail(&crate::crash::crash_path(&app_data_dir()), 20),
     })
 }
 
@@ -137,6 +138,32 @@ pub(crate) fn record_startup(elapsed_ms: u128) {
     lines.push(line);
     let _ = std::fs::create_dir_all(app_data_dir());
     let _ = std::fs::write(&p, lines.join("\n") + "\n");
+}
+
+/// 前端上报的未捕获异常/资源加载失败（WebView 崩溃前常见线索）。
+/// 只记消息与来源；`source` 经 `crash::redact_path` 压成文件名。
+#[tauri::command(async)]
+pub(crate) fn report_frontend_error(
+    message: String,
+    source: Option<String>,
+    stack: Option<String>,
+) -> Value {
+    let source = source.unwrap_or_default();
+    if message.trim().is_empty() && source.trim().is_empty() {
+        return json!({"ok": false, "error": "空错误"});
+    }
+    let mut extra = json!({"source": crate::crash::redact_path(&source)});
+    if let Some(st) = stack.filter(|s| !s.trim().is_empty()) {
+        extra["stack"] = json!(crate::crash::clamp_msg(&st));
+    }
+    let _ = crate::crash::append(
+        &crate::crash::crash_path(&app_data_dir()),
+        "frontend",
+        &message,
+        None,
+        Some(extra),
+    );
+    json!({"ok": true})
 }
 
 #[cfg(test)]

@@ -33,7 +33,8 @@ var I18N = {
     quota_notify: "额度提醒", quota_notify_hint: "即将到期或不足 10% 时通知", auto_backup: "自动备份", auto_backup_hint: "每天备份到本机，保留 7 份", update_notify: "新版本提醒", update_notify_hint: "每 24 小时检查一次",
     backup_now: "立即备份", backup_done: "备份完成：{n} 个账号", backup_fail: "备份失败：{e}", diagnostics: "导出诊断报告", diag_done: "诊断报告已导出", diag_fail: "导出失败：{e}",
     backup_dir: "备份目录", open_backup_dir: "打开备份目录", backup_info: "共 {n} 份备份", backup_info_none: "暂无备份", backup_open_fail: "打开备份目录失败：{e}", backup_open_toast: "已打开备份目录",
-    restore_backup: "恢复最近备份", restore_confirm_title: "恢复最近备份", restore_confirm_body: "将用最近一份本地备份替换当前账号库。恢复前会自动再做一份安全备份；确认继续？", restore_done: "已恢复 {n} 个账号", restore_fail: "恢复失败：{e}", backup_last: "最近 {t}",
+    restore_backup: "恢复备份", restore_confirm_title: "恢复备份", restore_confirm_body: "将用所选本地备份替换当前账号库。恢复前会自动再做一份安全备份；确认继续？", restore_done: "已恢复 {n} 个账号", restore_fail: "恢复失败：{e}", backup_last: "最近 {t}",
+    restore_pick_title: "选择要恢复的备份", restore_pick_sub: "按时间从新到旧；标「不完整」的备份无法恢复。", restore_pick_btn: "恢复这份", restore_bad: "备份不完整，未恢复：{e}", restore_warn: "已恢复，但{e}", restore_none: "没有可恢复的备份", backup_verified: "完整", backup_broken: "不完整", backup_accounts: "{n} 个账号",
     import_preview_btn: "预览", import_confirm: "确认导入", import_preview_hint: "新增 {n} · 重复 {d} · 需重登 {r}", import_preview_fail: "预览失败：{e}", import_none: "没有可导入的账号",
     preview_new: "新增", preview_dup: "重复", preview_relogin: "需重登", preview_invalid: "无效", import_confirm_hint: "确认后将合并导入，重复账号会跳过。",
     history_export: "导出 JSON", history_export_done: "已导出 {n} 条记录", history_export_fail: "导出失败：{e}", update_banner: "新版本 v{v} 可用",
@@ -107,7 +108,8 @@ var I18N = {
     quota_notify: "Quota alerts", quota_notify_hint: "Notify when expiring soon or below 10%", auto_backup: "Auto backup", auto_backup_hint: "Daily local backup, keep 7 copies", update_notify: "Update alerts", update_notify_hint: "Check every 24 hours",
     backup_now: "Back up now", backup_done: "Backup complete: {n} accounts", backup_fail: "Backup failed: {e}", diagnostics: "Export diagnostics", diag_done: "Diagnostics exported", diag_fail: "Export failed: {e}",
     backup_dir: "Backup folder", open_backup_dir: "Open backup folder", backup_info: "{n} backup(s)", backup_info_none: "No backups yet", backup_open_fail: "Failed to open the backup folder: {e}", backup_open_toast: "Opened the backup folder",
-    restore_backup: "Restore latest", restore_confirm_title: "Restore latest backup", restore_confirm_body: "Replace the current account library with the latest local backup? A safety backup is created first.", restore_done: "Restored {n} accounts", restore_fail: "Restore failed: {e}", backup_last: "latest {t}",
+    restore_backup: "Restore backup", restore_confirm_title: "Restore backup", restore_confirm_body: "Replace the current account library with the selected local backup? A safety backup is created first.", restore_done: "Restored {n} accounts", restore_fail: "Restore failed: {e}", backup_last: "latest {t}",
+    restore_pick_title: "Choose a backup to restore", restore_pick_sub: "Newest first; entries marked incomplete cannot be restored.", restore_pick_btn: "Restore this one", restore_bad: "Incomplete backup, nothing restored: {e}", restore_warn: "Restored, but {e}", restore_none: "No backups to restore", backup_verified: "Complete", backup_broken: "Incomplete", backup_accounts: "{n} accounts",
     import_preview_btn: "Preview", import_confirm: "Import", import_preview_hint: "{n} new · {d} duplicate · {r} need re-login", import_preview_fail: "Preview failed: {e}", import_none: "Nothing to import",
     preview_new: "New", preview_dup: "Duplicate", preview_relogin: "Re-login", preview_invalid: "Invalid", import_confirm_hint: "Import merges new accounts and skips duplicates.",
     history_export: "Export JSON", history_export_done: "Exported {n} records", history_export_fail: "Export failed: {e}", update_banner: "v{v} is available",
@@ -193,7 +195,14 @@ function localizeErr(msg) {
 function errText(e) { return localizeErr((e && (e.message || e.error)) || String(e || "?")); }
 function fmtT2(v) {
   if (v == null || v === "") return "?";
-  var ms = Number(v) < 1e12 ? Number(v) * 1000 : Number(v);
+  // 兼容三种来源：秒级时间戳、毫秒级时间戳、ISO 字符串（manifest/审计里的 created_at）
+  var ms;
+  if (typeof v === "string" && !/^\d+$/.test(v.trim())) {
+    ms = Date.parse(v);
+  } else {
+    ms = Number(v) < 1e12 ? Number(v) * 1000 : Number(v);
+  }
+  if (!isFinite(ms)) return String(v);
   var d = new Date(ms), p = function(n) { return String(n).padStart(2, "0"); };
   return (d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
 }
@@ -324,7 +333,7 @@ function hideModal(id) {
   S.lastFocus = null;
 }
 function topModal() {
-  var ids = ["confirmModal", "renameModal", "historyModal", "bakModal", "cfgModal", "addModal"];
+  var ids = ["confirmModal", "renameModal", "tagModal", "restoreModal", "historyModal", "bakModal", "cfgModal", "addModal"];
   for (var i = 0; i < ids.length; i++) if (isOpen(ids[i])) return el(ids[i]);
   return null;
 }
@@ -1485,19 +1494,51 @@ function loadBackupInfo() {
     txt.textContent = label;
   }).catch(function() { txt.textContent = ""; });
 }
-function restoreLatestBackup() {
-  api("get_backup_status").then(function(s) {
-    if (!s || !s.count) { pushToast(t("backup_info_none"), "warn"); return; }
-    askConfirm(t("restore_confirm_title"), t("restore_confirm_body"), t("restore_confirm_title")).then(function(ok) {
-      if (!ok) return;
-      api("restore_latest_backup").then(function(r) {
-        if (!r || r.ok === false) { pushToast(t("restore_fail", {e: (r && r.error) || "?"}), "bad"); return; }
-        pushToast(t("restore_done", {n: r.restored || 0}), "ok");
-        loadBackupInfo();
-        refreshAll(false);
-      }).catch(function(e) { pushToast(t("restore_fail", {e: errText(e)}), "bad"); });
-    });
+/* 恢复备份：先列出全部备份（时间 + 账号数 + 完整性），由用户选具体一份，
+   不再只有「最近一份」。恢复成功后后端会清空额度/福利缓存，这里重新拉取状态。 */
+function restoreBackup() {
+  api("list_backups").then(function(r) {
+    if (!r || r.ok === false) { pushToast(t("restore_fail", {e: (r && r.error) || "?"}), "bad"); return; }
+    var items = r.items || [];
+    if (!items.length) { pushToast(t("restore_none"), "warn"); return; }
+    var box = el("restoreList");
+    box.innerHTML = items.map(function(it) {
+      var when = it.created_at ? fmtT2(it.created_at) : it.name;
+      var badge = it.verified
+        ? '<span class="tag cur">' + esc(t("backup_verified")) + '</span>'
+        : '<span class="tag expired">' + esc(t("backup_broken")) + '</span>';
+      var accounts = '<span class="num">' + esc(t("backup_accounts", {n: it.profiles})) + '</span>';
+      return '<div class="history-row backup-row">'
+        + '<span class="history-plan">' + esc(when) + '<span class="mut num"> · ' + esc(it.name) + '</span></span>'
+        + accounts + badge
+        + '<button class="camp-btn" data-action="restore-pick" data-name="' + esc(it.name) + '" data-ok="' + (it.verified ? "1" : "0") + '"'
+        + (it.verified ? "" : " disabled")
+        + '>' + esc(t("restore_pick_btn")) + '</button>'
+        + '</div>';
+    }).join("");
+    openModal("restoreModal", '[data-action="restore-close"]');
   }).catch(function(e) { pushToast(t("restore_fail", {e: errText(e)}), "bad"); });
+}
+function restorePick(name) {
+  if (!name) return;
+  askConfirm(t("restore_confirm_title"), t("restore_confirm_body"), t("restore_confirm_title")).then(function(ok) {
+    if (!ok) return;
+    api("restore_backup", { name: name }).then(function(r) {
+      if (!r || r.ok === false) {
+        // 后端完整性校验失败时给出明确原因，而不是通用错误
+        var msg = (r && r.error) || "?";
+        pushToast(t("restore_bad", {e: localizeErr(msg)}), "bad");
+        return;
+      }
+      hideModal("restoreModal");
+      if (r.warning) pushToast(t("restore_warn", {e: r.warning}), "warn");
+      else pushToast(t("restore_done", {n: r.restored || 0}), "ok");
+      // 恢复会替换账号库并清空缓存：清掉前端这份额度/福利快照再拉
+      S.quota = {}; S.history = {}; S.quotaSeq = {}; S.claim = null;
+      loadBackupInfo();
+      refreshAll(false);
+    }).catch(function(e) { pushToast(t("restore_fail", {e: errText(e)}), "bad"); });
+  });
 }
 function openBackupDir(showToast) {
   api("open_backup_dir").then(function(r) {
@@ -1668,7 +1709,9 @@ document.addEventListener("click", function(e) {
     case "cfg-history": showHistory(); break;
     case "cfg-backup": backupNow(); break;
     case "cfg-openbackup": openBackupDir(true); break;
-    case "cfg-restorebackup": restoreLatestBackup(); break;
+    case "cfg-restorebackup": restoreBackup(); break;
+    case "restore-pick": restorePick(elt.getAttribute("data-name")); break;
+    case "restore-close": hideModal("restoreModal"); break;
     case "cfg-diag": exportDiagnostics(); break;
     case "bak-export": doExport(); break;
     case "bak-import": previewImport(); break;
@@ -1779,6 +1822,31 @@ document.addEventListener("keydown", function(e) {
     else if (f && f.name) { el("impDrop").textContent = f.name + " — " + t("drop_hint"); }
   });
 })();
+
+/* 未捕获异常/资源加载失败上报后端 crash.log（同一错误 1 分钟只报一次，避免死循环刷盘）。
+   后端只记消息与来源文件名，不记录界面数据。 */
+var _errReported = {};
+function reportFrontendError(message, source, stack) {
+  var msg = String(message == null ? "" : message).slice(0, 500);
+  var key = msg + "@" + String(source || "");
+  var now = Date.now();
+  if (_errReported[key] && now - _errReported[key] < 60000) return;
+  _errReported[key] = now;
+  try {
+    invoke("report_frontend_error", { message: msg, source: source || "", stack: String(stack || "").slice(0, 1500) }).catch(function() {});
+  } catch(e) {}
+}
+window.addEventListener("error", function(e) {
+  if (e && e.target && e.target !== window && (e.target.src || e.target.href)) {
+    reportFrontendError("资源加载失败: " + (e.target.src || e.target.href), e.target.tagName || "");
+    return;
+  }
+  reportFrontendError((e && e.message) || "script error", (e && e.filename) || "", (e && e.error && e.error.stack) || "");
+});
+window.addEventListener("unhandledrejection", function(e) {
+  var r = e && e.reason;
+  reportFrontendError("unhandledrejection: " + ((r && (r.message || r.error)) || String(r || "?")), "", (r && r.stack) || "");
+});
 
 /* ---------------- boot ---------------- */
 window.__hubRefresh = function() { refreshAll(false, null, null); };

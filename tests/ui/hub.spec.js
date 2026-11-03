@@ -88,7 +88,7 @@ test("claim history exports to JSON", async ({ page }) => {
 test("settings can open the backup folder and shows backup count", async ({ page }) => {
   await page.locator('[data-action="cfg"]').click();
   await expect(page.locator("#cfgModal")).toBeVisible();
-  await expect(page.locator("#backupInfoTxt")).toContainText("共 2 份备份");
+  await expect(page.locator("#backupInfoTxt")).toContainText("共 3 份备份");
   await page.locator('[data-action="cfg-openbackup"]').click();
   await expect.poll(() => page.evaluate(() =>
     window.__calls.filter(c => c.cmd === "open_backup_dir").length)).toBeGreaterThan(0);
@@ -104,13 +104,126 @@ test("backup toast offers a shortcut to the backup folder", async ({ page }) => 
     window.__calls.filter(c => c.cmd === "open_backup_dir").length)).toBeGreaterThan(0);
 });
 
-test("latest local backup can be restored after confirmation", async ({ page }) => {
+test("backup picker lists every backup and restores the chosen one", async ({ page }) => {
   await page.locator('[data-action="cfg"]').click();
-  await expect(page.locator("#backupInfoTxt")).toContainText("最近");
   await page.locator('[data-action="cfg-restorebackup"]').click();
+  await expect(page.locator("#restoreModal")).toBeVisible();
+  const rows = page.locator("#restoreList .backup-row");
+  await expect(rows).toHaveCount(3);
+  // 不完整的备份置灰，不能被选中
+  const broken = page.locator('#restoreList [data-name="20261101-120000"]');
+  await expect(broken).toBeDisabled();
+  await expect(page.locator('#restoreList [data-name="20261101-120000"]')).toHaveAttribute("data-ok", "0");
+
+  await page.locator('#restoreList [data-name="20261102-120000"]').click();
   await expect(page.locator("#confirmModal")).toBeVisible();
   await page.locator('[data-action="confirm-ok"]').click();
   await expect(page.locator(".toasts")).toContainText("已恢复 2 个账号");
+  const call = await page.evaluate(() => window.__calls.filter(c => c.cmd === "restore_backup").pop());
+  expect(call.args.name).toBe("20261102-120000");
+  // 恢复后前端清空额度快照并重新拉取状态
+  await expect.poll(() => page.evaluate(() => window.__calls.filter(c => c.cmd === "get_state").length)).toBeGreaterThan(1);
+});
+
+/* ---------- claim state machine（preparing → waiting_captcha → claiming → success） ---------- */
+
+// 让 claim_state 依次返回队列里的状态；mock 默认返回 idle
+async function scriptClaimStates(page, states) {
+  await page.evaluate((list) => {
+    const state = window.__claimScript = { list, i: 0 };
+    const orig = window.__TAURI_INTERNALS__.invoke;
+    window.__TAURI_INTERNALS__.invoke = function (cmd, args) {
+      if (cmd === "claim_state") {
+        const next = state.list[Math.min(state.i, state.list.length - 1)];
+        state.i += 1;
+        return Promise.resolve(next);
+      }
+      return orig(cmd, args);
+    };
+  }, states);
+}
+
+test("claim walks through preparing, captcha and claiming to success", async ({ page }) => {
+  await scriptClaimStates(page, [
+    { status: "waiting_captcha", planId: "p1", planName: "Weekend bonus", captchaUrl: "http://127.0.0.1:9/c" },
+    { status: "claiming", planId: "p1", planName: "Weekend bonus" },
+    { status: "success", planId: "p1", planName: "Weekend bonus", effectiveAt: 1900000000 }
+  ]);
+
+  const btn = page.locator('[data-action="claim"][data-plan="p1"]').first();
+  await expect(btn).toBeVisible();
+  await btn.click();
+
+  // 等待验证：按钮文案切到“验证中”，出现步骤条与重开入口
+  await expect(page.locator('.acct[data-key="alpha"] .claim-step.on')).toHaveCount(2);
+  await expect(page.locator('[data-action="claim-reopen"]')).toBeVisible();
+  await expect(btn).toBeDisabled();
+
+  // 领取中：第三步点亮
+  await expect(page.locator('.acct[data-key="alpha"] .claim-step.on')).toHaveCount(3);
+  await expect(btn).toHaveText("领取中");
+
+  // 成功：toast、活动从卡片移除、按钮消失
+  await expect(page.locator(".toasts")).toContainText("领取成功");
+  await expect(page.locator('.acct[data-key="alpha"] .camp')).toHaveCount(0);
+  await expect(page.locator('[data-action="claim"][data-plan="p1"]')).toHaveCount(0);
+});
+
+test("failed claim surfaces the error and re-enables the button", async ({ page }) => {
+  await scriptClaimStates(page, [
+    { status: "claiming", planId: "p1", planName: "Weekend bonus" },
+    { status: "failed", planId: "p1", message: "服务端拒绝了领取" }
+  ]);
+  await page.locator('[data-action="claim"][data-plan="p1"]').first().click();
+  await expect(page.locator(".toasts")).toContainText("领取失败");
+  await expect(page.locator('[data-action="claim"][data-plan="p1"]')).toBeEnabled();
+  await expect(page.locator('[data-action="claim"][data-plan="p1"]')).toHaveText("去领取");
+});
+
+test("claim history modal opens and renders rows", async ({ page }) => {
+  await page.locator('[data-action="cfg"]').click();
+  await page.locator('[data-action="cfg-history"]').click();
+  await expect(page.locator("#historyModal")).toBeVisible();
+  await expect(page.locator("#historyList .history-row")).toHaveCount(1);
+  await page.locator('[data-action="history-close"]').click();
+  await expect(page.locator("#historyModal")).toBeHidden();
+});
+
+/* ---------- 无障碍 ---------- */
+test("main view has no critical accessibility violations", async ({ page }) => {
+  const { AxeBuilder } = require("@axe-core/playwright");
+  const results = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa"])
+    .disableRules(["color-contrast"]) // 主题色由设计规范控制，另行人工核验
+    .analyze();
+  const serious = results.violations.filter((v) => v.impact === "critical" || v.impact === "serious");
+  expect(serious.map((v) => `${v.id}: ${v.nodes.length} node(s) — ${v.help}`)).toEqual([]);
+});
+
+test("modals keep dialog semantics and accessible names", async ({ page }) => {
+  const { AxeBuilder } = require("@axe-core/playwright");
+  for (const [action, modal] of [["cfg", "#cfgModal"], ["bak", "#bakModal"]]) {
+    await page.locator(`[data-action="${action}"]`).click();
+    await expect(page.locator(modal)).toBeVisible();
+    const results = await new AxeBuilder({ page })
+      .include(modal)
+      .withTags(["wcag2a", "wcag2aa"])
+      .disableRules(["color-contrast"])
+      .analyze();
+    const serious = results.violations.filter((v) => v.impact === "critical" || v.impact === "serious");
+    expect(serious.map((v) => `${modal} → ${v.id}: ${v.help}`)).toEqual([]);
+    await page.keyboard.press("Escape");
+  }
+});
+
+test("runtime errors are reported to the backend crash log", async ({ page }) => {
+  await page.evaluate(() => {
+    setTimeout(() => { throw new Error("boom-e2e"); }, 0);
+  });
+  await expect.poll(() => page.evaluate(() =>
+    window.__calls.filter(c => c.cmd === "report_frontend_error")
+      .some(c => String(c.args.message).indexOf("boom-e2e") >= 0)
+  )).toBe(true);
 });
 
 test("responsive grid switches between one and two columns", async ({ page }) => {
