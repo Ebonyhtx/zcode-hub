@@ -85,6 +85,25 @@ test("claim history exports to JSON", async ({ page }) => {
   await expect(page.locator(".toasts")).toContainText("已导出 2 条记录");
 });
 
+test("settings can open the backup folder and shows backup count", async ({ page }) => {
+  await page.locator('[data-action="cfg"]').click();
+  await expect(page.locator("#cfgModal")).toBeVisible();
+  await expect(page.locator("#backupInfoTxt")).toHaveText("共 2 份备份");
+  await page.locator('[data-action="cfg-openbackup"]').click();
+  await expect.poll(() => page.evaluate(() =>
+    window.__calls.filter(c => c.cmd === "open_backup_dir").length)).toBeGreaterThan(0);
+  await expect(page.locator(".toasts")).toContainText("已打开备份目录");
+});
+
+test("backup toast offers a shortcut to the backup folder", async ({ page }) => {
+  await page.locator('[data-action="cfg"]').click();
+  await page.locator('[data-action="cfg-backup"]').click();
+  await expect(page.locator(".toasts")).toContainText("备份完成");
+  await page.locator('.toasts .linkbtn', { hasText: "打开备份目录" }).click();
+  await expect.poll(() => page.evaluate(() =>
+    window.__calls.filter(c => c.cmd === "open_backup_dir").length)).toBeGreaterThan(0);
+});
+
 test("responsive grid switches between one and two columns", async ({ page }) => {
   await page.setViewportSize({ width: 700, height: 800 });
   const one = await page.evaluate(() => getComputedStyle(document.getElementById("acctList")).gridTemplateColumns);
