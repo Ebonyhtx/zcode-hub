@@ -5,9 +5,9 @@
     current_provider: "zai",
     current_logged_in: true,
     profiles: [
-      { key: "alpha", label: "Alpha", captured_at: "2026-11-01T10:00:00Z", is_current: true, provider: "zai", jwt_expired: false, tags: ["work"] },
-      { key: "beta", label: "Beta", captured_at: "2026-11-01T11:00:00Z", is_current: false, provider: "bigmodel", jwt_expired: false, tags: [] },
-      { key: "gamma", label: "Gamma", captured_at: "2026-11-01T12:00:00Z", is_current: false, provider: "zai", jwt_expired: true, tags: [] }
+      { key: "alpha", label: "Alpha", captured_at: "2026-11-01T10:00:00Z", is_current: true, provider: "zai", jwt_expired: false, tags: ["work"], client_version: "3.17.2", field_count: 10, stale: false },
+      { key: "beta", label: "Beta", captured_at: "2026-11-01T11:00:00Z", is_current: false, provider: "bigmodel", jwt_expired: false, tags: [], client_version: "3.17.0", field_count: 7, stale: true },
+      { key: "gamma", label: "Gamma", captured_at: "2026-11-01T12:00:00Z", is_current: false, provider: "zai", jwt_expired: true, tags: [], client_version: "3.17.2", field_count: 10, stale: false }
     ],
     zcode_running: true,
     process_error: null,
@@ -25,7 +25,9 @@
     quota_cache: {},
     version: "1.9.1",
     autostart: false,
-    compat: { ok: true, errors: [], notes: [], installed: true, zcode_version: "3.17.1" },
+    compat: { ok: true, errors: [], notes: [], installed: true, zcode_version: "3.17.2", verified_version: "3.17.2", version_status: "match" },
+    // 测试可在 addInitScript 里改这个对象，控制「客户端已升级」等场景
+    overrides: { compat: null, staleAlpha: false, refreshed: false },
     update_available: null
   };
   var quota = {
@@ -43,6 +45,17 @@
     forecast: [{ plan_id: "p1", model: "GLM", days_left: 12 }]
   };
   function clone(v) { return JSON.parse(JSON.stringify(v)); }
+  // overrides 让测试表达「客户端升级了 / 某存档落后」等场景，而不必在运行时 patch invoke。
+  // 测试用 addInitScript 设 window.__MOCK_OVERRIDES__，在 mock.js 之前执行。
+  function applyOverrides(st) {
+    var ov = Object.assign({}, st.overrides, window.__MOCK_OVERRIDES__ || {});
+    if (ov.compat) st.compat = Object.assign({}, st.compat, ov.compat);
+    if (ov.staleAlpha && !ov.refreshed) {
+      var a = st.profiles.filter(function (p) { return p.key === "alpha"; })[0];
+      if (a) { a.stale = true; a.field_count = 6; a.client_version = "3.17.2"; }
+    }
+    return st;
+  }
   function toSnake(k) {
     var m = { minutes: "auto_check_minutes", notifyEnabled: "notify_enabled", hotSwitch: "hot_switch",
               safeMode: "safe_mode", lang: "lang", closeAction: "close_action", startMinimized: "start_minimized",
@@ -56,7 +69,8 @@
       args = args || {};
       window.__calls.push({ cmd: cmd, args: args });
       switch (cmd) {
-        case "get_state": return Promise.resolve(clone(state));
+        case "get_state":
+          return Promise.resolve(clone(applyOverrides(state)));
         case "fetch_quota":
           return Promise.resolve(args.key === "gamma"
             ? { ok: false, code: "auth", error: "登录已过期，请重新登录该账号" }
@@ -66,6 +80,22 @@
           Object.keys(args).forEach(function (k) { state.settings[toSnake(k)] = args[k]; });
           return Promise.resolve({ ok: true, settings: clone(state.settings) });
         case "get_settings": return Promise.resolve(clone(state.settings));
+        case "switch_profile":
+          // hot 请求在开了热切换时返回 hot，否则 cold；严格模式后端会返回 strict
+          return Promise.resolve(state.settings.safe_mode
+            ? { ok: true, mode: "strict", relaunched: true, carried_over: 0, preserved_unknown: 3, merged: true }
+            : { ok: true, mode: args.hot && state.settings.hot_switch ? "hot" : "cold",
+                relaunched: !(args.hot && state.settings.hot_switch), carried_over: 1, preserved_unknown: 3, merged: true });
+        case "refresh_profile":
+          if (args.key !== "alpha") {
+            return Promise.resolve({ ok: false, code: "not_current", error: "只能刷新当前登录账号的存档；切换到此账号后会自动刷新" });
+          }
+          state.profiles.forEach(function (p) {
+            if (p.key === args.key) { p.stale = false; p.field_count = 10; p.client_version = "3.17.2"; }
+          });
+          // 刷新后 staleAlpha 覆盖不再生效
+          (window.__MOCK_OVERRIDES__ = window.__MOCK_OVERRIDES__ || {}).refreshed = true;
+          return Promise.resolve({ ok: true, key: args.key, fields: 10 });
         case "set_profile_tags":
           state.profiles.forEach(function (p) { if (p.key === args.key) p.tags = args.tags || []; });
           return Promise.resolve({ ok: true, tags: args.tags || [] });

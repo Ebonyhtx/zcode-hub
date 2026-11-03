@@ -87,6 +87,7 @@ pub fn run() {
             profiles::restore_profile,
             profiles::rename_profile,
             profiles::set_profile_tags,
+            profiles::refresh_profile,
             profiles::inspect_bundle,
             profiles::export_bundle,
             profiles::import_bundle,

@@ -84,6 +84,23 @@ git config core.hooksPath .githooks
 - **Actions 大版本不自动开 PR**（`.github/dependabot.yml` 已忽略）：每季度人工评审一次，逐条读 breaking changes、确认 Node 运行时与 runner 兼容后，按完整 commit SHA 升级并更新行尾版本注释
 - 任何被忽略的依赖（当前只有 `glib`，理由见 `SECURITY.md`）都要写明移除条件，条件满足后立即恢复自动升级
 
+## 客户端升级后的自查清单
+
+ZCode 客户端每升级一次，`credentials.json` 都可能多出新键。Hub 的设计是「只增不丢」（见
+`docs/DESIGN.md` §6），所以**加字段不需要改代码**——但需要确认新版本没有改结构：
+
+1. 跑只读探针，确认 `enc:v1` 仍然解得开（应输出 `ALL OK`）：
+   ```bash
+   python -I scripts/probe-client-compat.py
+   ```
+2. 比对字段集合，看有没有**按账号变化**的新键（键名里内嵌账号/组织 ID）。
+   有的话在 `src-tauri/src/formats.rs` 的 `ACCOUNT_SCOPED_PREFIXES` 加一行前缀。
+3. 跑 `cargo test`，特别是 `probe_*` 与 `merge_*` 系列——结构变更会先打破这些测试。
+4. 更新 `src-tauri/src/client.rs` 的 `VERIFIED_CLIENT_VERSION`，让设置页显示正确的「已验证至」。
+   它只是展示用的锚点，不参与切换决策。
+5. 客户端若重命名了 `zcodejwttoken` / `oauth:active_provider`，`probe_credentials` 会报缺必需键 →
+   需要同时更新 `formats.rs` 的常量与 `KNOWN_CRED_KEYS`，并补 fixture 契约测试。
+
 ## 行为准则
 
 保持友善、对事不对人。安全问题请走 [SECURITY.md](SECURITY.md) 的私下报告渠道，不要开公开 Issue。

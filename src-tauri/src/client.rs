@@ -13,11 +13,13 @@ pub(crate) static VERSION_CACHE: Mutex<Option<(i64, Option<String>)>> = Mutex::n
 
 pub(crate) const EXE_CACHE_SECS: i64 = 300;
 
-// Hub 对客户端文件格式的知识锚定在 3.17.x；客户端 major.minor 变化即提示兼容风险
-pub(crate) const SUPPORTED_CLIENT_VERSION: &str = "3.17";
+// Hub 的格式知识锚定在这个版本上；它只用于**展示与提示**，不是切换的门禁。
+// 真正的判据是 formats::probe_credentials 的结构探测：客户端加字段不算问题，
+// 改结构才会被探测抓到。升级客户端后按 CONTRIBUTING 的清单复核并更新此常量。
+pub(crate) const VERIFIED_CLIENT_VERSION: &str = "3.17.2";
 
 /// 未检测到客户端时的请求头回退版本（必须是 x.y.z 形态）
-pub(crate) const DEFAULT_CLIENT_VERSION: &str = "3.17.1";
+pub(crate) const DEFAULT_CLIENT_VERSION: &str = "3.17.2";
 
 pub(crate) fn zcode_client_version() -> Option<String> {
     let mut g = VERSION_CACHE.lock().unwrap();
@@ -32,14 +34,54 @@ pub(crate) fn zcode_client_version() -> Option<String> {
     v
 }
 
-pub(crate) fn client_version_supported(detected: &str) -> bool {
-    let dm: Vec<&str> = detected.split('.').take(2).collect();
-    let sm: Vec<&str> = SUPPORTED_CLIENT_VERSION.split('.').collect();
-    dm == sm
+/// 客户端版本相对「已验证版本」的关系。只做信息用途，不参与切换决策。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VersionStatus {
+    /// major.minor 完全一致（补丁号不同也算，例如 3.17.2 vs 3.17.0）
+    Match,
+    /// 客户端比你验证过的更新（可能是刚升级）
+    Newer,
+    /// 客户端比你验证过的更旧
+    Older,
+    /// 任一侧无法解析
+    Unknown,
 }
 
-// 兼容探测汇总：凭据/设置格式健康度 + 客户端版本。errors 非空 = 建议安全模式。
-// live 由调用方注入（一次读取，避免 get_state 里重复读盘/解密）。
+fn parse_version(v: &str) -> Option<Vec<u64>> {
+    let parts: Vec<u64> = v
+        .trim()
+        .split('.')
+        .map(|p| p.trim().parse::<u64>().ok())
+        .collect::<Option<Vec<_>>>()?;
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts)
+    }
+}
+
+/// 按数字段比较，不按字符串（`3.9` < `3.10`，字符串比较会反过来）。
+/// 只比 major.minor；补丁号差异视为 Match——同一 minor 内的补丁不改变文件格式。
+pub(crate) fn version_status(detected: &str, verified: &str) -> VersionStatus {
+    let (Some(d), Some(v)) = (parse_version(detected), parse_version(verified)) else {
+        return VersionStatus::Unknown;
+    };
+    let mm = |a: &[u64]| (a[0], a.get(1).copied().unwrap_or(0));
+    let (dm, vm) = (mm(&d), mm(&v));
+    if dm == vm {
+        VersionStatus::Match
+    } else if dm > vm {
+        VersionStatus::Newer
+    } else {
+        VersionStatus::Older
+    }
+}
+
+/// 兼容探测汇总：凭据/设置格式健康度 + 客户端版本。
+///
+/// `errors` 只放**结构性异常**（缺必需键、不可解析）——这些才该红；
+/// 版本差异进 `notes`，属于信息性提示，不阻止切换。
+// `live` 由调用方注入（一次读取，避免 get_state 里重复读盘/解密）。
 pub(crate) fn compat_report(live: Option<&Value>) -> serde_json::Value {
     let mut probe = formats::probe_credentials(live);
     let setting = read_json(&home_v2().join("setting.json")).ok();
@@ -47,19 +89,27 @@ pub(crate) fn compat_report(live: Option<&Value>) -> serde_json::Value {
     probe.errors.extend(ps.errors);
     probe.notes.extend(ps.notes);
     let ver = zcode_client_version();
-    match &ver {
-        Some(v) if !client_version_supported(v) => {
-            probe.errors.push(format!(
-                "客户端版本 {} 与已验证版本 {} 不同，文件格式可能已变化",
-                v, SUPPORTED_CLIENT_VERSION
-            ));
-        }
-        Some(_) => {}
-        None => probe
+    let status = match &ver {
+        Some(v) => version_status(v, VERIFIED_CLIENT_VERSION),
+        None => VersionStatus::Unknown,
+    };
+    match (&ver, status) {
+        (Some(v), VersionStatus::Newer) => probe.notes.push(format!(
+            "客户端版本 {} 高于已验证的 {}（信息性提示：文件结构仍由格式探测把关）",
+            v, VERIFIED_CLIENT_VERSION
+        )),
+        (Some(v), VersionStatus::Older) => probe.notes.push(format!(
+            "客户端版本 {} 低于已验证的 {}",
+            v, VERIFIED_CLIENT_VERSION
+        )),
+        (None, _) => probe
             .notes
             .push("未检测到 ZCode 客户端版本（未安装或未指定路径）".into()),
+        _ => {}
     }
-    json!({"ok": probe.ok(), "errors": probe.errors, "notes": probe.notes, "zcode_version": ver,
+    json!({"ok": probe.ok(), "errors": probe.errors, "notes": probe.notes,
+           "zcode_version": ver, "verified_version": VERIFIED_CLIENT_VERSION,
+           "version_status": format!("{:?}", status).to_lowercase(),
            "installed": zcode_exe_path().is_some()})
 }
 
@@ -142,11 +192,50 @@ mod tests {
     use super::*;
 
     #[test]
-    fn client_version_supported_compares_major_minor() {
-        assert!(client_version_supported("3.17.0"));
-        assert!(client_version_supported("3.17.99"));
-        assert!(!client_version_supported("3.18.0"));
-        assert!(!client_version_supported("4.0"));
-        assert!(!client_version_supported("3.1"));
+    fn version_status_compares_numerically_on_major_minor() {
+        use VersionStatus::*;
+        // 补丁号差异不算差异：同一 minor 内的补丁不改变文件格式
+        assert_eq!(version_status("3.17.2", "3.17.0"), Match);
+        assert_eq!(version_status("3.17.99", "3.17.2"), Match);
+        assert_eq!(version_status("3.17", "3.17.2"), Match);
+        // 客户端更新
+        assert_eq!(version_status("3.18.0", "3.17.2"), Newer);
+        assert_eq!(version_status("4.0.0", "3.99.9"), Newer);
+        // 客户端更旧
+        assert_eq!(version_status("3.16.5", "3.17.2"), Older);
+        assert_eq!(version_status("2.0", "3.17.2"), Older);
+        // 数字比较而非字符串：3.9 < 3.10
+        assert_eq!(version_status("3.9.0", "3.10.0"), Older);
+        assert_eq!(version_status("3.10.0", "3.9.0"), Newer);
+        // 缺 minor 视为 0
+        assert_eq!(version_status("3", "3.0.4"), Match);
+        // 解析失败
+        assert_eq!(version_status("", "3.17.2"), Unknown);
+        assert_eq!(version_status("abc", "3.17.2"), Unknown);
+        assert_eq!(version_status("3.x.1", "3.17.2"), Unknown);
+    }
+
+    #[test]
+    fn version_mismatch_is_a_note_not_an_error() {
+        // 版本差异只做提示：probe 的 errors 只装结构性异常
+        let v = json!({"zcodejwttoken": "enc:v1:a.b.c"});
+        let report = compat_report(Some(&v));
+        let notes = report["notes"].as_array().unwrap();
+        let errors = report["errors"].as_array().unwrap();
+        assert!(
+            !notes
+                .iter()
+                .any(|n| n.as_str().unwrap_or("").contains("版本")),
+            "本机版本若匹配则不应有版本提示"
+        );
+        assert!(errors.is_empty(), "未知字段不应产生 error");
+        assert_eq!(report["verified_version"], json!(VERIFIED_CLIENT_VERSION));
+        // version_status 字段存在且是已知取值之一
+        let st = report["version_status"].as_str().unwrap();
+        assert!(
+            ["match", "newer", "older", "unknown"].contains(&st),
+            "意外状态: {}",
+            st
+        );
     }
 }

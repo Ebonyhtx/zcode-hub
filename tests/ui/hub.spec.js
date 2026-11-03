@@ -226,6 +226,95 @@ test("runtime errors are reported to the backend crash log", async ({ page }) =>
   )).toBe(true);
 });
 
+/* ---------- 客户端演进 / 存档新鲜度 ---------- */
+
+test("stale snapshot shows a tag and only the current account can refresh", async ({ page }) => {
+  // beta 存档落后（旧版本 + 字段更少）
+  await expect(page.locator('.acct[data-key="beta"] .tag.warn')).toContainText("旧 3.17.0");
+  // 折叠态也能看到标签（标签在头部）
+  await expect(page.locator('.acct[data-key="beta"]')).toHaveAttribute("data-key", "beta");
+
+  // 非当前账号：只有说明，没有刷新按钮
+  await page.locator('.acct[data-key="beta"] .acct-head').click();
+  await expect(page.locator('.acct[data-key="beta"] .stale-note')).toBeVisible();
+  await expect(page.locator('.acct[data-key="beta"] [data-action="refresh-profile"]')).toHaveCount(0);
+
+  // 当前账号不落后时没有提示
+  await expect(page.locator('.acct[data-key="alpha"] .stale-note')).toHaveCount(0);
+});
+
+test("refreshing the current account's stale snapshot clears the marker", async ({ page }) => {
+  // 让 mock 把当前账号标成落后（字段更少），验证刷新按钮只在当前账号出现并生效
+  await page.addInitScript(() => { window.__MOCK_OVERRIDES__ = { staleAlpha: true }; });
+  await page.reload();
+  await expect(page.locator('.acct[data-key="alpha"] .stale-note')).toBeVisible();
+  const btn = page.locator('.acct[data-key="alpha"] [data-action="refresh-profile"]');
+  await expect(btn).toBeVisible();
+  await btn.click();
+  await expect(page.locator(".toasts")).toContainText("存档已刷新");
+  const call = await page.evaluate(() => window.__calls.filter(c => c.cmd === "refresh_profile").pop());
+  expect(call.args.key).toBe("alpha");
+});
+
+test("settings show the client version and flag an unverified one", async ({ page }) => {
+  await page.locator('[data-action="cfg"]').click();
+  // 版本匹配：只显示版本号
+  await expect(page.locator("#zcodeVer")).toHaveText("ZCode v3.17.2");
+});
+
+test("an unverified client version is flagged in settings only, not as a banner", async ({ page }) => {
+  await page.addInitScript(() => {
+    window.__MOCK_OVERRIDES__ = { compat: { zcode_version: "3.18.0", version_status: "newer" } };
+  });
+  await page.reload();
+  await page.locator('[data-action="cfg"]').click();
+  await expect(page.locator("#zcodeVer")).toContainText("未验证");
+  await expect(page.locator("#zcodeVer")).toContainText("3.17.2");
+  // 版本差异不是结构性错误 → 顶栏不出现
+  await expect(page.locator("#compatBar")).toBeHidden();
+});
+
+// 非当前账号默认折叠，切换按钮在折叠体内——先展开
+async function expandCard(page, key) {
+  const card = page.locator(`.acct[data-key="${key}"]`);
+  if (await card.evaluate((n) => n.classList.contains("folded"))) {
+    await card.locator(".acct-head").click();
+  }
+  await expect(card.locator('[data-action="switch"]')).toBeVisible();
+}
+
+test("switch toast follows the explicit mode from the backend", async ({ page }) => {
+  await expandCard(page, "beta");
+  await page.locator('[data-action="switch"][data-key="beta"]').click();
+  await page.locator('[data-action="confirm-ok"]').click();
+  await expect(page.locator(".toasts")).toContainText("已切换并重启");
+  const cold = await page.evaluate(() => window.__calls.filter(c => c.cmd === "switch_profile").pop());
+  expect(cold.args.hot).toBe(false);
+});
+
+test("hot switch shows the restart hint instead of claiming a restart", async ({ page }) => {
+  // 打开热切换开关
+  await page.locator('[data-action="cfg"]').click();
+  await page.locator('#cfgModal label.tgl:has(#hotTgl)').click();
+  await page.locator('[data-action="cfg-close"]').click();
+  await expandCard(page, "beta");
+  await page.locator('[data-action="switch"][data-key="beta"]').click();
+  await page.locator('[data-action="confirm-ok"]').click();
+  await expect(page.locator(".toasts")).toContainText("已热切换");
+  // 热切换后要求重启才能更新账号名
+  await expect(page.locator("#noticeBar")).toBeVisible();
+});
+
+test("strict mode reports its own toast", async ({ page }) => {
+  await page.locator('[data-action="cfg"]').click();
+  await page.locator('#cfgModal label.tgl:has(#safeModeTgl)').click();
+  await page.locator('[data-action="cfg-close"]').click();
+  await expandCard(page, "beta");
+  await page.locator('[data-action="switch"][data-key="beta"]').click();
+  await page.locator('[data-action="confirm-ok"]').click();
+  await expect(page.locator(".toasts")).toContainText("严格模式");
+});
+
 test("responsive grid switches between one and two columns", async ({ page }) => {
   await page.setViewportSize({ width: 700, height: 800 });
   const one = await page.evaluate(() => getComputedStyle(document.getElementById("acctList")).gridTemplateColumns);

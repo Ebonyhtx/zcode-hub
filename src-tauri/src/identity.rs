@@ -22,6 +22,14 @@ pub(crate) struct ProfileInfo {
     pub(crate) jwt_expired: bool,
     /// 用户自定义标签（meta.json），用于搜索/筛选。
     pub(crate) tags: Vec<String>,
+    /// 抓取该存档时的客户端版本（旧存档为空）
+    #[serde(default)]
+    pub(crate) client_version: String,
+    /// 存档里记录的字段数（旧存档为 0 = 未知）
+    #[serde(default)]
+    pub(crate) field_count: u64,
+    /// 存档落后于当前 live（缺少客户端新增字段）→ 前端显示「旧」标签
+    pub(crate) stale: bool,
     /// 快照无法读取/解密时的具体原因（前端显示“存档异常”，不再静默消失）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) error: Option<String>,
@@ -132,6 +140,36 @@ pub(crate) fn account_label(creds: &Value) -> String {
     formats::account_label_with(creds, &|s: &str| decrypt_value(s).ok())
 }
 
+/// 把「存档抓取时的客户端版本 / 字段数」写进 meta，用于判断存档是否落后。
+/// 只记录事实，不参与切换决策；旧 meta 没有这两个键时视为「未知，不判陈旧」。
+pub(crate) fn stamp_snapshot_meta(meta: &mut Value, creds: &Value) {
+    meta["client_version"] = json!(crate::client::client_app_version());
+    meta["field_count"] = json!(creds.as_object().map(|o| o.len()).unwrap_or(0));
+}
+
+/// 存档是否落后于当前 live：
+/// - 两侧都有字段数，且存档的更少；
+/// - 存档记录的客户端版本与当前一致（客户端升级后字段必然变化，不算「落后」，
+///   那种情况由切换时的合并自愈）。
+pub(crate) fn snapshot_is_stale(meta: &Value, live_field_count: usize, live_version: &str) -> bool {
+    let Some(archived) = meta.get("field_count").and_then(|v| v.as_u64()) else {
+        return false; // 老 meta：无据可判，不误报
+    };
+    let archived_ver = meta
+        .get("client_version")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if archived_ver.is_empty() {
+        return false;
+    }
+    if crate::client::version_status(archived_ver, live_version)
+        != crate::client::VersionStatus::Match
+    {
+        return false;
+    }
+    live_field_count > archived as usize
+}
+
 #[tauri::command(async)]
 pub(crate) fn capture_profile(name: Option<String>) -> serde_json::Value {
     let src = cred_path();
@@ -162,6 +200,7 @@ pub(crate) fn capture_profile(name: Option<String>) -> serde_json::Value {
     meta["label"] = json!(if updated { keep_label } else { base.clone() });
     meta["provider"] = json!(provider);
     meta["captured_at"] = json!(chrono::Utc::now().to_rfc3339());
+    stamp_snapshot_meta(&mut meta, &creds);
     let _mid = ensure_profile_device_mid(&dd, &mut meta, true);
     let _auid = ensure_profile_arms_uid(&dd, &mut meta, true);
     if let Err(e) = write_json(&dd.join("meta.json"), &meta) {
@@ -216,7 +255,12 @@ pub(crate) fn preserve_current_login(live: &Value) -> Result<(), String> {
         return Ok(());
     }
     if let Some(dir) = find_profile_dir_for_live(live) {
-        return write_snapshot(&dir, live).map_err(|e| format!("无法保全当前登录: {}", e));
+        write_snapshot(&dir, live).map_err(|e| format!("无法保全当前登录: {}", e))?;
+        // 顺手刷新新鲜度标记：这份存档刚刚与 live 同步过
+        let mut meta = read_json(&dir.join("meta.json")).ok().unwrap_or(json!({}));
+        stamp_snapshot_meta(&mut meta, live);
+        let _ = write_json(&dir.join("meta.json"), &meta);
+        return Ok(());
     }
     let auto = format!("autosave-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
     let dir = profiles_dir().join(&auto);
@@ -224,10 +268,9 @@ pub(crate) fn preserve_current_login(live: &Value) -> Result<(), String> {
     let label = account_label(live);
     let provider =
         formats::active_provider_with(live, &|s: &str| decrypt_value(s).ok()).unwrap_or_default();
-    let _ = write_json(
-        &dir.join("meta.json"),
-        &json!({"label": label, "provider": provider, "captured_at": chrono::Utc::now().to_rfc3339()}),
-    );
+    let mut meta = json!({"label": label, "provider": provider, "captured_at": chrono::Utc::now().to_rfc3339()});
+    stamp_snapshot_meta(&mut meta, live);
+    let _ = write_json(&dir.join("meta.json"), &meta);
     Ok(())
 }
 
@@ -280,53 +323,36 @@ pub(crate) fn switch_profile(key: String, hot: Option<bool>) -> serde_json::Valu
         return json!({"ok": false, "error": "目标存档缺少有效的 provider，拒绝切换"});
     }
     let live_creds = read_json(&cur).ok();
-    let live_probe_bad = live_creds
+    let live_probe = live_creds
         .as_ref()
-        .map(|v| !formats::probe_credentials(Some(v)).ok())
-        .unwrap_or(false);
-    let safe_requested = load_settings()
+        .map(|v| formats::probe_credentials(Some(v)));
+    let live_probe_bad = live_probe.as_ref().map(|p| !p.ok()).unwrap_or(false);
+    let strict_requested = load_settings()
         .get("safe_mode")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    // ---------------- 安全模式：只合并账号身份字段，保留未知字段 ----------------
-    if (safe_requested || live_probe_bad) && live_creds.is_some() {
-        let original = live_creds.clone().unwrap_or_else(|| json!({}));
-        if let Err(e) = preserve_current_login(&original) {
-            audit_log(
-                "switch",
-                Some(&key),
-                json!({"mode": "safe", "result": "fail", "error": "preserve_failed"}),
-            );
-            return json!({"ok": false, "error": format!("{}。为避免丢失当前账号，已取消切换", e)});
-        }
-        let mut merged = original.clone();
-        if let Err(e) = formats::merge_account_fields(&mut merged, &prof_v, &target_provider) {
-            audit_log(
-                "switch",
-                Some(&key),
-                json!({"mode": "safe", "result": "fail", "error": e}),
-            );
-            return json!({"ok": false, "error": format!("安全模式合并失败：{}", e)});
-        }
-        if !hot_swap_verified(&cur, &merged, Some(&original)) {
-            audit_log(
-                "switch",
-                Some(&key),
-                json!({"mode": "safe", "result": "fail", "error": "verify_failed"}),
-            );
-            return json!({"ok": false, "error": "安全模式写入验证失败，已恢复原文件"});
-        }
-        apply_switch_identity(&prof_dir, &target_provider);
+    // ---------------- 严格模式：live 凭据异常时宁可不切换 ----------------
+    // 语义（v1.11.0 起）：普通模式遇到不可读的 live 会把它留档为 .corrupt 后继续；
+    // 严格模式直接拒绝，把「最后一次救援机会」留给用户手动处理。
+    if strict_requested && (live_creds.is_none() || live_probe_bad) {
         audit_log(
             "switch",
             Some(&key),
-            json!({"mode": "safe", "result": "ok"}),
+            json!({"mode": "strict", "result": "fail", "error": "live_unusable"}),
         );
-        return json!({"ok": true, "hot": true, "safe": true, "relaunched": false});
+        return json!({"ok": false, "mode": "strict",
+            "error": "严格模式：当前凭据缺失或结构异常，已拒绝切换。请先用“备份/导入”导出或重新登录 ZCode"});
     }
 
+    // ---------------- 计算合并结果（所有模式共用） ----------------
+    // 合并是唯一的写入内容：live 为基底（携带客户端的全部字段），
+    // 只替换身份字段 + 按账号键，其余原样保留。冷/热/严格只差「是否重启」。
+    let merge_plan = build_merge_plan(live_creds.as_ref(), &prof_v, &target_provider);
+
     // ---------------- 热切换：客户端不重启，失败恢复后回退冷路径 ----------------
+    // 严格模式与热切换互斥：严格模式语义要求客户端完全重新初始化。
+    let want_hot = want_hot && !strict_requested;
     if want_hot {
         preserve_corrupt_live(&cur);
         if let Ok(cur_v) = read_json(&cur) {
@@ -335,10 +361,18 @@ pub(crate) fn switch_profile(key: String, hot: Option<bool>) -> serde_json::Valu
             }
         }
         let original = read_json(&cur).ok();
-        if hot_swap_verified(&cur, &prof_v, original.as_ref()) {
+        if hot_swap_verified(&cur, &merge_plan.merged, original.as_ref()) {
             apply_switch_identity(&prof_dir, &target_provider);
-            audit_log("switch", Some(&key), json!({"mode": "hot", "result": "ok"}));
-            return json!({"ok": true, "hot": true, "relaunched": false});
+            audit_log(
+                "switch",
+                Some(&key),
+                json!({"mode": "hot", "result": "ok", "carried": merge_plan.carried_over,
+                       "preserved": merge_plan.preserved_unknown}),
+            );
+            return json!({"ok": true, "mode": "hot", "relaunched": false,
+                "carried_over": merge_plan.carried_over,
+                "preserved_unknown": merge_plan.preserved_unknown,
+                "merged": merge_plan.used_merge});
         }
         // 校验失败时 hot_swap_verified 已恢复原文件 → 继续冷路径
     }
@@ -371,7 +405,10 @@ pub(crate) fn switch_profile(key: String, hot: Option<bool>) -> serde_json::Valu
     } else {
         false
     };
-    if let Err(e) = write_json(&cur, &prof_v) {
+    // 重新读取：上面的 preserve_current_login 可能已把 live 刷新过
+    let fresh_live = read_json(&cur).ok();
+    let plan = build_merge_plan(fresh_live.as_ref(), &prof_v, &target_provider);
+    if let Err(e) = write_json(&cur, &plan.merged) {
         if had_backup {
             match std::fs::copy(&backup, &cur) {
                 Ok(_) => {
@@ -411,12 +448,82 @@ pub(crate) fn switch_profile(key: String, hot: Option<bool>) -> serde_json::Valu
     } else {
         false
     };
+    let mode = if strict_requested { "strict" } else { "cold" };
     audit_log(
         "switch",
         Some(&key),
-        json!({"mode": "cold", "result": "ok", "relaunched": rel}),
+        json!({"mode": mode, "result": "ok", "relaunched": rel,
+               "carried": plan.carried_over, "preserved": plan.preserved_unknown}),
     );
-    json!({"ok": true, "relaunched": rel})
+    json!({"ok": true, "mode": mode, "relaunched": rel,
+           "carried_over": plan.carried_over,
+           "preserved_unknown": plan.preserved_unknown,
+           "merged": plan.used_merge})
+}
+
+/// 一次切换要写入的凭据内容 + 可观测的合并统计。
+pub(crate) struct MergePlan {
+    pub(crate) merged: Value,
+    /// 从目标存档单向补进 live 的字段数
+    pub(crate) carried_over: usize,
+    /// live 中保留下来、Hub 不认识的字段数（客户端新增字段的证据）
+    pub(crate) preserved_unknown: usize,
+    /// 是否真的走了合并（false = live 不可用，退化为整写存档）
+    pub(crate) used_merge: bool,
+}
+
+/// 计算切换后的凭据内容。
+///
+/// - live 可用：以 live 为基底合并身份字段（保留客户端全部字段）
+/// - live 缺失/不可读：直接使用存档（此时没有可丢的未知字段），并标记 used_merge=false
+pub(crate) fn build_merge_plan(live: Option<&Value>, prof_v: &Value, provider: &str) -> MergePlan {
+    let Some(live) = live.filter(|v| v.is_object()) else {
+        return MergePlan {
+            merged: prof_v.clone(),
+            carried_over: 0,
+            preserved_unknown: 0,
+            used_merge: false,
+        };
+    };
+    let mut merged = live.clone();
+    // 合并失败（存档缺 token/provider）由调用方在更早处拦截；这里失败时退回存档，
+    // 与旧行为一致，不静默写坏 live。
+    let used_merge = formats::merge_account_fields(&mut merged, prof_v, provider).is_ok();
+    if !used_merge {
+        return MergePlan {
+            merged: prof_v.clone(),
+            carried_over: 0,
+            preserved_unknown: 0,
+            used_merge: false,
+        };
+    }
+    let carried_over = prof_v
+        .as_object()
+        .map(|src| {
+            src.keys()
+                .filter(|k| {
+                    !live
+                        .as_object()
+                        .map(|l| l.contains_key(*k))
+                        .unwrap_or(false)
+                })
+                .count()
+        })
+        .unwrap_or(0);
+    let preserved_unknown = merged
+        .as_object()
+        .map(|m| {
+            m.keys()
+                .filter(|k| !formats::KNOWN_CRED_KEYS.contains(&k.as_str()))
+                .count()
+        })
+        .unwrap_or(0);
+    MergePlan {
+        merged,
+        carried_over,
+        preserved_unknown,
+        used_merge,
+    }
 }
 
 // 客户端 setting.json 的 providerFamilyDomain 必须 = 当前登录账号的家族（zai/bigmodel），
@@ -595,6 +702,100 @@ pub(crate) fn get_jwt_token(key: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn build_merge_plan_keeps_client_fields_and_counts_them() {
+        // live 带着客户端新增字段；存档是旧格式（只有身份字段）
+        let live = json!({
+            "zcodejwttoken": "enc:v1:old.tok.en",
+            "oauth:active_provider": "enc:v1:old.ap.en",
+            "oauth:bigmodel:access_token": "enc:v1:old.access.en",
+            "mcp:oauth:x:tokens": "enc:v1:mcp.en",
+            "project-key-location:v1:%5B%22bigmodel%22%2C%225373%22%5D": "enc:v1:proj.en"
+        });
+        let prof = json!({
+            "zcodejwttoken": "enc:v1:new.tok.en",
+            "oauth:active_provider": "enc:v1:bigmodel.en",
+            "oauth:bigmodel:access_token": "enc:v1:new.access.en",
+            "oauth:bigmodel:user_info": "enc:v1:new.user.en"
+        });
+        let plan = build_merge_plan(Some(&live), &prof, formats::PROVIDER_BIGMODEL);
+        assert!(plan.used_merge);
+        assert_eq!(plan.merged["zcodejwttoken"], json!("enc:v1:new.tok.en"));
+        assert_eq!(
+            plan.merged["mcp:oauth:x:tokens"],
+            json!("enc:v1:mcp.en"),
+            "客户端新增字段必须保留"
+        );
+        assert!(
+            plan.merged
+                .get("project-key-location:v1:%5B%22bigmodel%22%2C%225373%22%5D")
+                .is_none(),
+            "按账号键必须清掉"
+        );
+        // 存档独有的 user_info 被 carry-over 补进来
+        assert_eq!(
+            plan.merged["oauth:bigmodel:user_info"],
+            json!("enc:v1:new.user.en")
+        );
+        assert!(plan.carried_over >= 1);
+        // mcp 那个字段不在 KNOWN_CRED_KEYS 里 → 计入 preserved_unknown
+        assert!(plan.preserved_unknown >= 1);
+    }
+
+    #[test]
+    fn build_merge_plan_degrades_to_snapshot_when_live_unusable() {
+        let prof = json!({
+            "zcodejwttoken": "enc:v1:t.en",
+            "oauth:active_provider": "enc:v1:p.en"
+        });
+        for live in [None, Some(json!("not-object"))] {
+            let plan = build_merge_plan(live.as_ref(), &prof, formats::PROVIDER_ZAI);
+            assert!(!plan.used_merge, "live 不可用时不应声称合并");
+            assert_eq!(plan.merged, prof, "退化为整写存档");
+            assert_eq!(plan.carried_over, 0);
+            // 存档缺 provider 家族字段时 merge 会失败 → 同样退化
+            let plan2 = build_merge_plan(Some(&json!({"x": 1})), &json!({}), formats::PROVIDER_ZAI);
+            assert!(!plan2.used_merge);
+        }
+    }
+
+    #[test]
+    fn snapshot_staleness_needs_matching_version_and_fewer_fields() {
+        let meta = |ver: &str, fields: u64| json!({"client_version": ver, "field_count": fields});
+        let live_ver = "3.17.2";
+        // 同版本 + 存档字段更少 → 落后
+        assert!(snapshot_is_stale(&meta("3.17.2", 7), 10, live_ver));
+        // 字段数相同或更多 → 不落后
+        assert!(!snapshot_is_stale(&meta("3.17.2", 10), 10, live_ver));
+        assert!(!snapshot_is_stale(&meta("3.17.2", 12), 10, live_ver));
+        // 补丁号不同但 minor 相同 → 仍按同版本比较
+        assert!(snapshot_is_stale(&meta("3.17.0", 5), 10, live_ver));
+        // 客户端升级过（minor 不同）→ 字段差异是升级造成的，不判陈旧
+        assert!(!snapshot_is_stale(&meta("3.16.0", 5), 10, live_ver));
+        assert!(!snapshot_is_stale(&meta("3.18.0", 5), 10, live_ver));
+        // 老 meta 缺字段 → 无法判断，不误报
+        assert!(!snapshot_is_stale(&json!({"label": "x"}), 10, live_ver));
+        assert!(!snapshot_is_stale(&json!({"field_count": 3}), 10, live_ver));
+        assert!(!snapshot_is_stale(
+            &json!({"client_version": "3.17.2"}),
+            10,
+            live_ver
+        ));
+    }
+
+    #[test]
+    fn stamp_snapshot_meta_records_version_and_field_count() {
+        let mut meta = json!({"label": "keep"});
+        let creds = json!({"a": 1, "b": 2, "c": 3});
+        stamp_snapshot_meta(&mut meta, &creds);
+        assert_eq!(meta["field_count"], json!(3));
+        assert_eq!(
+            meta["client_version"],
+            json!(crate::client::client_app_version())
+        );
+        assert_eq!(meta["label"], json!("keep"), "不得覆盖已有字段");
+    }
 
     #[test]
     fn jwt_expired_detects_exp_claim() {
