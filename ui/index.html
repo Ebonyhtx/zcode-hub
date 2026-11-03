@@ -59,7 +59,7 @@
   <div class="setcard">
     <div class="setrow">
       <span class="lbl" data-i18n="auto_check"></span>
-      <select id="autoCheckSel">
+      <select id="autoCheckSel" data-i18n-aria="auto_check">
         <option value="0" data-i18n="off"></option>
         <option value="5" data-i18n="min5"></option>
         <option value="15" data-i18n="min15"></option>
@@ -172,7 +172,7 @@
     <div class="cfgsec" data-i18n="sys_sec"></div>
     <div class="mline"><span class="mlbl" data-i18n="autostart"></span><label class="tgl"><input type="checkbox" id="autoStartTgl"><i></i><span class="sr-only" data-i18n="autostart"></span></label><span class="mut" data-i18n="autostart_hint"></span></div>
     <div class="mline"><span class="mlbl" data-i18n="start_min"></span><label class="tgl"><input type="checkbox" id="startMinTgl"><i></i><span class="sr-only" data-i18n="start_min"></span></label><span class="mut" data-i18n="start_min_hint"></span></div>
-    <div class="mline"><span class="mlbl" data-i18n="close_action"></span><select id="closeActionSel"><option value="tray" data-i18n="close_tray"></option><option value="quit" data-i18n="close_quit"></option></select></div>
+    <div class="mline"><span class="mlbl" data-i18n="close_action"></span><select id="closeActionSel" data-i18n-aria="close_action"><option value="tray" data-i18n="close_tray"></option><option value="quit" data-i18n="close_quit"></option></select></div>
     <div class="mline"><span class="mlbl" data-i18n="hot"></span><label class="tgl"><input type="checkbox" id="hotTgl"><i></i><span class="sr-only" data-i18n="hot"></span></label><span class="mut" data-i18n="hot_hint"></span></div>
     <div class="hotnote" data-i18n="hot_note"></div>
     <div class="mline"><span class="mlbl" data-i18n="safe_mode"></span><label class="tgl"><input type="checkbox" id="safeModeTgl"><i></i><span class="sr-only" data-i18n="safe_mode"></span></label><span class="mut" data-i18n="safe_hint"></span></div>
@@ -185,7 +185,7 @@
       <span class="mut" id="backupInfoTxt"></span>
     </div>
     <div class="mline"><span class="mlbl" data-i18n="update_notify"></span><label class="tgl"><input type="checkbox" id="updateNotifyTgl"><i></i><span class="sr-only" data-i18n="update_notify"></span></label><span class="mut" data-i18n="update_notify_hint"></span></div>
-    <div class="mline"><span class="mlbl" data-i18n="lang"></span><select id="langSel"><option value="zh">中文</option><option value="en">English</option></select></div>
+    <div class="mline"><span class="mlbl" data-i18n="lang"></span><select id="langSel" data-i18n-aria="lang"><option value="zh">中文</option><option value="en">English</option></select></div>
     <div class="mline">
       <button class="camp-btn danger" data-action="cfg-kill"><svg class="icon"><use href="#i-power"/></svg><span data-i18n="kill"></span></button>
       <button class="camp-btn" data-action="cfg-history"><svg class="icon"><use href="#i-history"/></svg><span data-i18n="claim_history"></span></button>
@@ -222,6 +222,16 @@
       <button class="linkbtn" data-action="bak-reveal" data-i18n="open_folder"></button>
     </div>
     <div class="mfoot"><span></span><button class="cancel" data-action="bak-close" data-i18n="close"></button></div>
+  </div>
+</div>
+
+<!-- Restore a specific local backup -->
+<div class="overlay" id="restoreModal" hidden>
+  <div class="mbox wide" role="dialog" aria-modal="true" aria-labelledby="restoreTitle">
+    <h3 id="restoreTitle" data-i18n="restore_pick_title"></h3>
+    <div class="sub" data-i18n="restore_pick_sub"></div>
+    <div class="history-list" id="restoreList"></div>
+    <div class="mfoot"><span></span><button class="cancel" data-action="restore-close" data-i18n="close"></button></div>
   </div>
 </div>
 

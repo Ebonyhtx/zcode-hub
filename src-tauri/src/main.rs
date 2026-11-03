@@ -2,6 +2,7 @@
 
 mod audit;
 mod claim;
+mod crash;
 mod formats;
 mod history;
 mod platform;
@@ -25,6 +26,7 @@ use tauri::Manager;
 
 pub fn run() {
     let started = std::time::Instant::now();
+    crash::install_panic_hook();
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(w) = app.get_webview_window("main") {
@@ -121,8 +123,10 @@ pub fn run() {
             backup::backup_now,
             backup::open_backup_dir,
             backup::get_backup_status,
-            backup::restore_latest_backup,
+            backup::list_backups_cmd,
+            backup::restore_backup,
             diagnostics::export_diagnostics,
+            diagnostics::report_frontend_error,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

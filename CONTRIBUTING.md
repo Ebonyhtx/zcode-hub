@@ -66,14 +66,23 @@ git config core.hooksPath .githooks
 - 提交信息用英文 conventional 风格（`feat:` / `fix:` / `chore:` / `docs:`）
 - 涉及加密 / 路径处理 / 解析逻辑的改动请附单元测试（各模块底部 `mod tests`，参考 `crypto.rs` / `quota.rs`）
 - UI 交互改动请补 `tests/ui/` 的 Playwright 用例；CI 会跑真实页面 + mock IPC，失败时自动上传截图
+- 主界面与弹窗有 axe（WCAG 2.0 A/AA）自动检查，新增可交互控件要有可访问名称（`data-i18n-aria`）
 - `cargo test` 必须全绿；UI 改动请同时 `node --check ui/app.js`
 - 改动 UI 文案时记得同步 `ui/app.js` 里 `I18N` 的中英两份字典
 
 ## 版本发布（维护者）
 
 1. 更新 `CHANGELOG.md` 与 `tauri.conf.json` / `Cargo.toml` 版本号（两处必须一致）
-2. `git tag vX.Y.Z && git push origin vX.Y.Z` —— CI 自动构建签名安装包并发布 Release（含 `latest.json` 更新清单）
-3. 发布前流水线会再跑一次全历史泄密扫描
+2. `git tag vX.Y.Z && git push origin vX.Y.Z` —— CI 自动构建签名安装包并发布 Release（含 `latest.json` 更新清单与 `SHA256SUMS.txt`）
+3. Release 说明由 `scripts/release-notes.sh` 从 `CHANGELOG.md` 的对应版本段落提取；段落为空会直接失败
+4. 发布前流水线会再跑一次全历史泄密扫描
+5. 校验产物：下载 `SHA256SUMS.txt` 后 `sha256sum -c SHA256SUMS.txt`（PowerShell 用 `Get-FileHash`）
+
+## 依赖升级节奏
+
+- cargo 与 Actions 的 minor/patch 由 Dependabot 每周分组提交，CI 绿即可合并
+- **Actions 大版本不自动开 PR**（`.github/dependabot.yml` 已忽略）：每季度人工评审一次，逐条读 breaking changes、确认 Node 运行时与 runner 兼容后，按完整 commit SHA 升级并更新行尾版本注释
+- 任何被忽略的依赖（当前只有 `glib`，理由见 `SECURITY.md`）都要写明移除条件，条件满足后立即恢复自动升级
 
 ## 行为准则
 

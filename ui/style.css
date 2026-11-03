@@ -305,6 +305,9 @@ html[lang="zh-CN"] .cfgsec{letter-spacing:.02em}
 .history-list{max-height:46vh;overflow:auto;display:flex;flex-direction:column;gap:5px;margin-bottom:6px}
 .history-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--line);border-radius:var(--r1);font-size:var(--fs1)}
 .history-plan{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 备份选择：时间/目录名 + 账号数 + 完整性 + 恢复按钮 */
+.backup-row{grid-template-columns:minmax(0,1fr) auto auto auto}
+.backup-row button[disabled]{opacity:.5;cursor:not-allowed}
 
 /* ---------- toasts ---------- */
 .toasts{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);width:min(450px,calc(100vw - 24px));display:flex;flex-direction:column;gap:6px;z-index:99;pointer-events:none}
@@ -343,6 +346,9 @@ html[lang="zh-CN"] .cfgsec{letter-spacing:.02em}
   .curmark{margin-left:0}
   .history-row{grid-template-columns:1fr auto}
   .history-row .chip{grid-column:1/-1;justify-self:start}
+  /* 备份行在窄屏回落成两列：信息占整行，账号数/按钮各占一格 */
+  .backup-row{grid-template-columns:1fr auto}
+  .backup-row .history-plan{grid-column:1/-1}
 }
 @media (min-width:820px){.wrap{max-width:760px}}
 @media (min-width:1100px){

@@ -8,7 +8,7 @@
 ┌────────────────────────── ZCode Hub (Tauri 2) ──────────────────────────┐
 │  ui/  index.html + style.css + app.js      ← 零依赖前端，CSP: script 'self' │
 │        │  IPC (invoke)                                                       │
-│  src-tauri/src/main.rs                    ← 入口 / 37 commands 注册      │
+│  src-tauri/src/main.rs                    ← 入口 / 43 commands 注册      │
 │  src-tauri/src/identity.rs                ← 身份指纹 / 切换 / 设备隔离   │
 │  src-tauri/src/profiles.rs                ← 账号库 CRUD / 回收站 / 备份  │
 │  src-tauri/src/quota.rs                   ← 额度 / 缓存 / 燃尽率历史     │
@@ -18,6 +18,7 @@
 │  src-tauri/src/{oauth,app}.rs             ← OAuth / 托盘 / 通知 / 状态   │
 │  src-tauri/src/{crypto,util}.rs           ← 快照加密 / 原子写 / 隐私 key │
 │  src-tauri/src/{backup,diagnostics}.rs    ← 备份 / 诊断 / 启动基线       │
+│  src-tauri/src/crash.rs                   ← panic / 前端异常落盘        │
 │   └─ 守卫: safe_key 路径穿越校验 / 原子写入 / 泄密扫描                        │
 │  src-tauri/src/formats.rs                  ← 客户端文件格式纯逻辑（注入式）   │
 │   └─ credentials / setting / telemetry-state / arms store + 契约测试        │
@@ -76,15 +77,22 @@
   导入时用目标机密钥重新加密，因此可跨用户名/跨机器恢复。v1 旧备份仍可导入，无法解密的账号会标记为需重新登录。
 - **本地自动备份**：每 24h 把 `profiles/`（DPAPI 快照）与设置复制到 `backups/<时间戳>/`，默认保留 7 份；
   它是本机恢复点，不跨机。跨机仍用 `.zhb`。导入前 `inspect_bundle` 只解密预览（新增/重复/需重登），确认后才写入。
-- **诊断报告**：设置里导出的脱敏 JSON 只含版本、OS/架构、兼容状态、哈希后的账号/额度摘要、审计与启动日志尾部，
-  不含 token、邮箱、展示名或真实账号目录名。
+- **备份恢复**：可列出全部备份并选择具体一份（不再只有「最近一份」）。恢复前校验 manifest 记录的账号数
+  与实际目录数：实际更少即判定为残缺，**拒绝恢复**（不让截断的备份覆盖账号库）；恢复前自动再做一次安全备份，
+  替换失败回滚原目录。恢复成功后清空额度/福利的内存与落盘缓存并重置 `last_check`，避免卡片显示已不存在的账号额度。
+- **诊断报告**：设置里导出的脱敏 JSON 只含版本、OS/架构、兼容状态、哈希后的账号/额度摘要、审计与启动日志尾部、
+  崩溃日志尾部（最近 20 条），不含 token、邮箱、展示名或真实账号目录名。
+- **崩溃日志**：进程 panic（全局 hook）与前端未捕获异常（`window.onerror` / `unhandledrejection`）追加到
+  `crash.log`：只记版本、时间、类别、消息与来源文件名（绝对路径经 `redact_path` 压成文件名），
+  超过 512KB 保留最新一半。前端同类错误 60 秒内只报一次，避免死循环刷盘。
 - **审计/额度历史/福利持久化**：账号 key 只以 SHA-256 前 16 位形式落盘（文件名/JSON 键），不出现邮箱或昵称。
 
 ## 测试策略
 
-- **Rust 单测**（各模块底部的 `mod tests`，共 65 个）：
+- **Rust 单测**（各模块底部的 `mod tests`，共 72 个）：
   加密往返与布局守护、畸形 IV 拒绝、路径穿越、JWT 过期、marketing/preview 解析、原子写入、
-  安全模式合并、热切换验证回路、历史追加/裁剪、审计轮转、验证码回环、KDF —— 纯函数优先，不碰真实凭据
+  安全模式合并、热切换验证回路、历史追加/裁剪、审计轮转、崩溃日志轮转与路径脱敏、
+  备份完整性校验与恢复目标解析、验证码回环、KDF —— 纯函数优先，不碰真实凭据
 - **格式契约测试**（`src-tauri/tests/fixtures/*.json` + `formats::tests`）：脱敏构造的客户端
   文件样本钉死字段名与解析语义——客户端格式变更会先打破测试而非线上行为
 - **泄漏扫描器自检**：`scripts/secret-scan.sh --selftest` 构造已知泄漏（文件、文档明文密码、
@@ -94,6 +102,12 @@
 - **回归测试**：通知触发条件（开关/有无福利/手动托盘检测/失败数）、领取后活动乐观移除、
   验证码大 body/错误 Origin、额度历史缓存失效、畸形 IV、安全模式合并等
 - **前端检查**：`node --check ui/app.js` + I18N zh/en 键集合一致性（CI 门禁）
+- **Playwright 功能 E2E**（18 例，真实页面 + `__TAURI_INTERNALS__` mock IPC）：主题/折叠/搜索筛选/
+  置顶/标签/设置持久化/导入预览/领取历史/备份目录/备份选择恢复/领取状态机
+  （preparing → waiting_captcha → claiming → success，含失败分支）/前端错误上报/响应式列数
+- **无障碍检查**：axe（WCAG 2.0 A/AA）扫主界面与设置、备份弹窗；`color-contrast` 规则因主题色
+  由设计规范控制而单独人工核验。当前发现并修复了 4 个 `<select>` 缺少可访问名称的问题
+  （`data-i18n-aria` 随语言切换更新）
 - **响应式矩阵**：520×620 / 620×800 / 1100×800 / 1560×900 / 1920×1080，中英文各跑一遍；
   验证 1/2/3 列、排序与手动排序、领取按钮、设置弹窗、路径提示无裁切/无横向溢出
 - **CI**：三平台 `cargo test`；Windows 额外跑 `clippy -D warnings`；全历史泄密扫描 + 仓库一致性门禁

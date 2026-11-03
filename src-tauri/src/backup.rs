@@ -2,8 +2,10 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use crate::benefits::{load_benefits_once, persist_benefits, BENEFITS, LAST_CHECK};
 use crate::formats::{read_json, write_json};
 use crate::platform;
+use crate::quota::{load_quota_cache_once, persist_quota_cache, QUOTA_CACHE};
 use crate::settings::{load_settings, save_settings};
 use crate::util::{app_data_dir, audit_log, config_path, copy_dir_all, profiles_dir};
 
@@ -44,18 +46,106 @@ pub(crate) fn backup_status() -> Value {
            "latest_at": latest_at, "path": root.display().to_string()})
 }
 
-/// 恢复最近一份本地备份：先把当前账号库复制到临时目录，再做一份安全备份，
-/// 然后用备份替换 profiles。失败时回滚到原目录。
+/// 完整性判定：manifest 记录的账号数与实际账号目录数不一致时，说明备份可能被中断截断。
+/// 实际少于记录 → 判为不完整（拒绝恢复，避免用残缺备份覆盖账号库）；
+/// 实际多于记录 → 只是多出目录，可恢复但给出提示。
+pub(crate) fn verify_counts(
+    manifest_profiles: Option<u64>,
+    actual: usize,
+) -> (bool, Option<String>) {
+    if actual == 0 {
+        return (false, Some("备份里没有账号目录".into()));
+    }
+    match manifest_profiles {
+        Some(n) if actual < n as usize => (
+            false,
+            Some(format!(
+                "备份不完整：清单记录 {} 个账号，实际只有 {}",
+                n, actual
+            )),
+        ),
+        Some(n) if actual > n as usize => (
+            true,
+            Some(format!("备份含清单外目录：清单 {} 个，实际 {}", n, actual)),
+        ),
+        _ => (true, None),
+    }
+}
+
+fn count_profile_dirs(dir: &Path) -> usize {
+    std::fs::read_dir(dir)
+        .map(|rd| rd.flatten().filter(|e| e.path().is_dir()).count())
+        .unwrap_or(0)
+}
+
+/// 单份备份的展示条目：目录名 + manifest 元数据 + 完整性。
+pub(crate) fn backup_entry(dir: &Path) -> Value {
+    let manifest = read_json(&dir.join("manifest.json"))
+        .ok()
+        .unwrap_or(json!({}));
+    let manifest_profiles = manifest.get("profiles").and_then(|v| v.as_u64());
+    let actual = count_profile_dirs(&dir.join("profiles"));
+    let (ok, warning) = verify_counts(manifest_profiles, actual);
+    json!({
+        "name": dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+        "created_at": manifest.get("created_at").cloned().unwrap_or(Value::Null),
+        "hub_version": manifest.get("hub_version").cloned().unwrap_or(Value::Null),
+        "profiles": actual,
+        "manifest_profiles": manifest_profiles,
+        "verified": ok,
+        "warning": warning,
+    })
+}
+
+/// 全部备份条目，最新在前（目录名是时间戳，字典序即时间序）。
+pub(crate) fn list_backups(root: &Path) -> Vec<Value> {
+    let mut entries: Vec<Value> = backup_dirs(root).iter().map(|d| backup_entry(d)).collect();
+    entries.reverse();
+    entries
+}
+
+/// 解析要恢复的备份：None = 最新一份；Some(name) 必须是备份根目录下的直接子目录。
+pub(crate) fn resolve_backup(root: &Path, name: Option<&str>) -> Result<PathBuf, String> {
+    let mut dirs = backup_dirs(root);
+    let Some(name) = name.map(str::trim).filter(|s| !s.is_empty()) else {
+        return dirs.pop().ok_or_else(|| "没有可恢复的备份".to_string());
+    };
+    let valid_name = !name.starts_with('.')
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.contains("..")
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || "-_".contains(c));
+    if !valid_name {
+        return Err("备份标识无效".into());
+    }
+    dirs.into_iter()
+        .find(|d| d.file_name().map(|n| n == name).unwrap_or(false))
+        .ok_or_else(|| "找不到该备份（可能已被清理）".to_string())
+}
+
+/// 恢复指定备份（默认最新一份）。先把当前账号库复制到临时目录，再做一份安全备份，
+/// 然后用备份替换 profiles；失败时回滚到原目录。
 #[tauri::command(async)]
-pub(crate) fn restore_latest_backup() -> Value {
+pub(crate) fn restore_backup(name: Option<String>) -> Value {
     let _guard = BACKUP_LOCK.lock().unwrap();
     let root = backup_root();
-    let Some(target) = backup_dirs(&root).pop() else {
-        return json!({"ok": false, "error": "没有可恢复的备份"});
+    let target = match resolve_backup(&root, name.as_deref()) {
+        Ok(t) => t,
+        Err(e) => return json!({"ok": false, "error": e}),
     };
     let src = target.join("profiles");
     if !src.is_dir() {
         return json!({"ok": false, "error": "备份缺少 profiles 目录"});
+    }
+    // 恢复前校验完整性：残缺备份绝不覆盖账号库（见 verify_counts）
+    let entry = backup_entry(&target);
+    let manifest_profiles = entry.get("manifest_profiles").and_then(|v| v.as_u64());
+    let (verified, warning) = verify_counts(manifest_profiles, count_profile_dirs(&src));
+    if !verified {
+        return json!({"ok": false, "error": warning.unwrap_or_else(|| "备份校验失败".into()),
+                       "backup": target.file_name().map(|n| n.to_string_lossy().to_string())});
     }
     let dest = profiles_dir();
     let tmp = app_data_dir().join(format!("profiles.restore-tmp-{}", rand::random::<u32>()));
@@ -86,17 +176,45 @@ pub(crate) fn restore_latest_backup() -> Value {
     if had_dest {
         let _ = std::fs::remove_dir_all(&old);
     }
-    let restored = std::fs::read_dir(&dest)
-        .map(|rd| rd.flatten().filter(|e| e.path().is_dir()).count())
-        .unwrap_or(0);
+    let restored = count_profile_dirs(&dest);
+    // 旧额度/福利缓存指向恢复前的账号集合，留着会让卡片显示已不存在的账号额度
+    let cleared = clear_account_caches();
     audit_log(
         "restore_backup",
         None,
         json!({"backup": target.file_name().map(|n| n.to_string_lossy().to_string()),
-               "accounts": restored}),
+               "accounts": restored, "caches_cleared": cleared}),
     );
     json!({"ok": true, "restored": restored,
-           "backup": target.file_name().map(|n| n.to_string_lossy().to_string())})
+           "backup": target.file_name().map(|n| n.to_string_lossy().to_string()),
+           "warning": warning, "caches_cleared": cleared})
+}
+
+/// 恢复后清空额度/福利的内存与落盘缓存，返回清掉的条目数。
+pub(crate) fn clear_account_caches() -> usize {
+    load_quota_cache_once();
+    load_benefits_once();
+    let qn = {
+        let mut g = QUOTA_CACHE.lock().unwrap();
+        let n = g.as_ref().map(|m| m.len()).unwrap_or(0);
+        *g = Some(Default::default());
+        n
+    };
+    let bn = {
+        let mut g = BENEFITS.lock().unwrap();
+        let n = g.as_ref().map(|m| m.len()).unwrap_or(0);
+        *g = Some(Default::default());
+        n
+    };
+    *LAST_CHECK.lock().unwrap() = None;
+    persist_quota_cache();
+    persist_benefits();
+    qn + bn
+}
+
+#[tauri::command(async)]
+pub(crate) fn list_backups_cmd() -> Value {
+    json!({"ok": true, "items": list_backups(&backup_root())})
 }
 
 #[tauri::command(async)]
@@ -269,6 +387,83 @@ mod tests {
             .collect();
         assert_eq!(left, vec!["20260103-000001", "20260104-000001"]);
         assert_eq!(prune_backups(&root, 5), 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn verify_counts_rejects_truncated_backups() {
+        // 无清单：只要能读到账号目录就允许恢复
+        assert_eq!(verify_counts(None, 2), (true, None));
+        // 数量一致
+        assert_eq!(verify_counts(Some(3), 3), (true, None));
+        // 实际更少 → 不完整，拒绝恢复（关键防线：残缺备份不能覆盖账号库）
+        let (ok, warning) = verify_counts(Some(3), 2);
+        assert!(!ok);
+        assert!(warning.unwrap().contains('3'));
+        // 实际更多 → 允许但提示
+        let (ok, warning) = verify_counts(Some(1), 3);
+        assert!(ok);
+        assert!(warning.unwrap().contains("清单外"));
+        // 空目录永远拒绝
+        assert!(!verify_counts(Some(0), 0).0);
+        assert!(!verify_counts(None, 0).0);
+    }
+
+    #[test]
+    fn resolve_backup_defaults_to_newest_and_blocks_traversal() {
+        let root = tmp("resolve");
+        for name in ["20260101-000001", "20260102-000001"] {
+            std::fs::create_dir_all(root.join(name).join("profiles")).unwrap();
+        }
+        let newest = resolve_backup(&root, None).unwrap();
+        assert_eq!(newest.file_name().unwrap(), "20260102-000001");
+        let picked = resolve_backup(&root, Some(" 20260101-000001 ")).unwrap();
+        assert_eq!(picked.file_name().unwrap(), "20260101-000001");
+        for bad in ["..", "../profiles", "a/b", "a\\b", ".hidden", "nope"] {
+            assert!(
+                resolve_backup(&root, Some(bad)).is_err(),
+                "应拒绝: {:?}",
+                bad
+            );
+        }
+        let empty = tmp("resolve-empty");
+        assert!(resolve_backup(&empty, None).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&empty);
+    }
+
+    #[test]
+    fn list_backups_is_newest_first_with_metadata() {
+        let root = tmp("list");
+        for (name, profiles) in [("20260101-000001", 2), ("20260102-000001", 2)] {
+            let d = root.join(name);
+            std::fs::create_dir_all(d.join("profiles")).unwrap();
+            write_json(
+                &d.join("manifest.json"),
+                &json!({"created_at": "2026-01-01T00:00:00Z", "profiles": profiles,
+                        "hub_version": "1.10.1"}),
+            )
+            .unwrap();
+        }
+        // 第二份清单说 2 个账号但只有 1 个目录 → 不完整
+        for i in 0..2 {
+            std::fs::create_dir_all(
+                root.join("20260101-000001")
+                    .join("profiles")
+                    .join(format!("p{}", i)),
+            )
+            .unwrap();
+        }
+        std::fs::create_dir_all(root.join("20260102-000001").join("profiles").join("p0")).unwrap();
+        let items = list_backups(&root);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["name"], json!("20260102-000001"), "最新在前");
+        assert_eq!(items[0]["profiles"], json!(1));
+        assert_eq!(items[0]["verified"], json!(false));
+        assert!(items[0]["warning"].as_str().unwrap().contains("不完整"));
+        assert_eq!(items[1]["verified"], json!(true));
+        assert_eq!(items[1]["manifest_profiles"], json!(2));
+        assert_eq!(items[1]["hub_version"], json!("1.10.1"));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

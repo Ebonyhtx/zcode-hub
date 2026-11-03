@@ -3,6 +3,24 @@
 本文件记录 ZCode Hub 的显著变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.10.2] - 2026-11-03
+
+### 新增
+- 崩溃与异常日志：进程 panic（全局 hook）与前端未捕获异常写入 `%APPDATA%\zcode-hub\crash.log`（限长轮转，路径脱敏），诊断报告附带最近 20 条
+- 「恢复备份」可列出全部本地备份（时间 / 账号数 / 完整性）并指定恢复到某一份，不再只能恢复最新一份
+- 恢复前校验 manifest 账号数与实际目录数，**残缺备份直接拒绝恢复**；恢复成功后清空额度与福利缓存
+- Playwright 新增领取状态机用例（准备 → 等待验证 → 领取 → 成功 / 失败）与 axe（WCAG 2.0 A/AA）无障碍检查
+- Release 说明改为从 `CHANGELOG.md` 对应版本段落提取（`scripts/release-notes.sh`），并随包发布 `SHA256SUMS.txt`
+
+### 修复
+- 无障碍：4 个 `<select>`（自动检测周期、排序、关闭行为、语言）补上可访问名称，此前 axe 报 `select-name`
+
+### 安全与工程
+- `rust-toolchain.toml` 移除 `llvm-tools-preview`（仅 Coverage workflow 需要，避免每台开发机下载 LLVM）
+- 覆盖率门槛：`scripts/coverage-gate.py` 以当前基线 46.7% 设 45% 下限，防止覆盖率悄悄回退
+- CONTRIBUTING 增加「依赖升级节奏」：Actions 大版本每季度人工评审一次
+- `npm` 新增 devDependency `@axe-core/playwright`（固定 4.11.0）
+
 ## [1.10.1] - 2026-11-03
 
 ### 新增

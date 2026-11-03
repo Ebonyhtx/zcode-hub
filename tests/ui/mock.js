@@ -78,13 +78,32 @@
             ] });
         case "import_bundle": return Promise.resolve({ ok: true, added: 1, skipped: 1, relogin: 0 });
         case "backup_now": return Promise.resolve({ ok: true, profiles: 3 });
-        case "get_backup_status": return Promise.resolve({ ok: true, count: 2, latest: "20261103-000001", latest_at: "2026-11-03T00:00:00Z", path: "C:/Users/demo/AppData/Roaming/zcode-hub/backups" });
-        case "restore_latest_backup": return Promise.resolve({ ok: true, restored: 2, backup: "20261103-000001" });
+        case "get_backup_status": return Promise.resolve({ ok: true, count: 3, latest: "20261103-120000", latest_at: "2026-11-03T12:00:00Z", path: "C:/Users/demo/AppData/Roaming/zcode-hub/backups" });
+        case "list_backups":
+          return Promise.resolve({ ok: true, items: [
+            { name: "20261103-120000", created_at: "2026-11-03T12:00:00Z", hub_version: "1.10.1", profiles: 3, manifest_profiles: 3, verified: true, warning: null },
+            { name: "20261102-120000", created_at: "2026-11-02T12:00:00Z", hub_version: "1.10.1", profiles: 2, manifest_profiles: 2, verified: true, warning: null },
+            { name: "20261101-120000", created_at: "2026-11-01T12:00:00Z", hub_version: "1.10.0", profiles: 1, manifest_profiles: 2, verified: false, warning: "备份不完整：清单记录 2 个账号，实际只有 1" }
+          ] });
+        case "restore_backup":
+          if (args.name === "20261101-120000") {
+            return Promise.resolve({ ok: false, error: "备份不完整：清单记录 2 个账号，实际只有 1" });
+          }
+          return Promise.resolve({ ok: true, restored: args.name === "20261102-120000" ? 2 : 3, backup: args.name });
+        case "report_frontend_error": return Promise.resolve({ ok: true });
         case "open_backup_dir": return Promise.resolve({ ok: true, path: "C:/Users/demo/AppData/Roaming/zcode-hub/backups" });
         case "export_diagnostics": return Promise.resolve({ ok: true, path: args.path });
         case "export_claim_history": return Promise.resolve({ ok: true, count: 2, path: args.path });
         case "claim_history":
           return Promise.resolve({ ok: true, items: [{ ts: 1700000000, plan: "Weekend bonus", effectiveAt: 1700001000 }] });
+        case "claim_plan":
+          // 真实后端领取成功后会重查福利；mock 直接移除该活动，避免刷新时又出现按钮
+          if (state.benefits[args.key] && state.benefits[args.key].campaigns) {
+            state.benefits[args.key].campaigns =
+              state.benefits[args.key].campaigns.filter(function (c) { return c.plan_id !== args.planId; });
+            state.benefits[args.key].count = state.benefits[args.key].campaigns.length;
+          }
+          return Promise.resolve({ ok: true, started: true });
         case "claim_state": return Promise.resolve({ status: "idle" });
         case "oauth_status": return Promise.resolve({ status: "idle" });
         case "check_all_benefits":
