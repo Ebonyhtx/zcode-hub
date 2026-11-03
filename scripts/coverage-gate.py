@@ -15,7 +15,12 @@ DEFAULT_MIN = 45.0  # 基线 46.7%（2026-11-03），留出余量防抖动
 def parse_lcov(path):
     """返回 (命中行数, 总行数)。LCOV 的 DA:<line>,<count> 才是行覆盖数据。"""
     hit = total = 0
-    with open(path, encoding="utf-8") as f:
+    try:
+        f = open(path, encoding="utf-8")
+    except OSError as e:
+        sys.stderr.write("[coverage-gate] 无法读取 LCOV 报告 %s: %s\n" % (path, e))
+        raise SystemExit(1)
+    with f:
         for line in f:
             if not line.startswith("DA:"):
                 continue
@@ -34,6 +39,11 @@ def parse_lcov(path):
 
 
 def main(argv):
+    # 输出含中文：Windows 控制台默认 cp1252/GBK 会 UnicodeEncodeError，
+    # 那会把真正的报错盖掉。显式固定为 UTF-8。
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
     if len(argv) < 2:
         sys.stderr.write("usage: coverage-gate.py <lcov.info> [--min N]\n")
         return 2

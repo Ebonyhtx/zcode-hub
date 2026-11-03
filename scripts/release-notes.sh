@@ -16,6 +16,13 @@ fi
 import re
 import sys
 
+# CHANGELOG 是中文：Windows 控制台默认 cp1252/GBK，直接 print 会在 CI 上崩。
+# 显式把 stdout 重配为 UTF-8，保证任何平台输出一致。
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 version = sys.argv[1]
 heading = re.compile(r"^##\s+\[(?P<ver>[^\]]+)\]")
 with open("CHANGELOG.md", encoding="utf-8") as f:

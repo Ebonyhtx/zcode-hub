@@ -103,6 +103,10 @@ jobs:
       - name: Scanner selftest
         shell: bash
         run: bash scripts/secret-scan.sh --selftest
+      # 脚本在非 UTF-8 控制台（Windows runner 默认 cp1252）下的行为，本地 UTF-8 终端看不到
+      - name: Script selftest (non-UTF-8 console)
+        shell: bash
+        run: bash scripts/scripts-selftest.sh
       - name: Repo consistency gate
         shell: bash
         run: bash scripts/repo-check.sh
