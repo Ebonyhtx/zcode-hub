@@ -119,6 +119,8 @@ pub fn run() {
             system::install_update,
             system::update_progress,
             backup::backup_now,
+            backup::open_backup_dir,
+            backup::get_backup_status,
             diagnostics::export_diagnostics,
         ])
         .run(tauri::generate_context!())
