@@ -364,3 +364,7 @@ html[lang="zh-CN"] .cfgsec{letter-spacing:.02em}
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}
 }
+
+/* 存档落后提示：只对当前账号提供刷新入口 */
+.stale-note{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:6px 0 2px;padding:6px 8px;border-radius:var(--r1);background:var(--warn-bg);border:1px solid var(--warn-bd);font-size:var(--fs1)}
+.stale-note .mut{color:var(--warn);flex:1;min-width:0}

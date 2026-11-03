@@ -8,7 +8,9 @@ use crate::benefits::{check_benefits_many, load_benefits_once, BENEFITS, LAST_CH
 use crate::client::{compat_report, launch_zcode_process, zcode_exe_path, zcode_running};
 use crate::crypto::{decrypt_value, read_snapshot_checked};
 use crate::formats::{self, read_json, write_json};
-use crate::identity::{account_label, cred_fingerprint, jwt_expired, profile_label, ProfileInfo};
+use crate::identity::{
+    account_label, cred_fingerprint, jwt_expired, profile_label, snapshot_is_stale, ProfileInfo,
+};
 use crate::platform;
 use crate::profiles::all_profile_keys;
 use crate::quota::{load_quota_cache_once, quota_alerts, QUOTA_CACHE};
@@ -207,6 +209,12 @@ pub(crate) fn get_state() -> serde_json::Value {
         .and_then(|c| formats::active_provider_with(c, &dec))
         .unwrap_or_default();
     let cur_fp = live.as_ref().and_then(cred_fingerprint);
+    // 当前 live 的字段数与客户端版本：用于判断各存档是否落后（见 snapshot_is_stale）
+    let live_fields = live
+        .as_ref()
+        .and_then(|v| v.as_object().map(|o| o.len()))
+        .unwrap_or(0);
+    let live_ver = crate::client::client_app_version();
     let mut profiles = Vec::new();
     let pd = profiles_dir();
     if pd.exists() {
@@ -255,6 +263,16 @@ pub(crate) fn get_state() -> serde_json::Value {
                         _ => false,
                     };
                     let je = jwt_expired(&pval);
+                    let archived_ver = meta
+                        .get("client_version")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let archived_fields = meta
+                        .get("field_count")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let stale = !ic && snapshot_is_stale(&meta, live_fields, &live_ver);
                     profiles.push(ProfileInfo {
                         key: name,
                         label,
@@ -263,6 +281,9 @@ pub(crate) fn get_state() -> serde_json::Value {
                         provider,
                         jwt_expired: je,
                         tags,
+                        client_version: archived_ver,
+                        field_count: archived_fields,
+                        stale,
                         error: None,
                     });
                 }
@@ -280,6 +301,16 @@ pub(crate) fn get_state() -> serde_json::Value {
                         provider,
                         jwt_expired: false,
                         tags,
+                        client_version: meta
+                            .get("client_version")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        field_count: meta
+                            .get("field_count")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0),
+                        stale: false,
                         error: Some(err),
                     });
                 }

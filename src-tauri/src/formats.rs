@@ -341,6 +341,8 @@ pub fn probe_setting(setting: Option<&Value>) -> FormatProbe {
 /// 混合身份：服务端看到的是 A 的身份、B 的令牌，界面还可能提示切换成功。这里改为：
 /// - 必换：`zcodejwttoken`、`oauth:active_provider`
 /// - 同目标 provider 的 access_token / refresh_token / user_info 一并替换（存在才写）
+/// - 按账号内嵌 ID 的键（`ACCOUNT_SCOPED_PREFIXES`）从 live 删除
+/// - 源存档独有的非身份字段单向补进 live（live 已有的以 live 为准）
 /// - 其余字段（含客户端未来新增的未知字段）一律保留
 ///
 /// 调用方必须先解密并校验 provider 属于已知家族，再写前备份、写后按 token 指纹校验。
@@ -379,6 +381,10 @@ pub fn merge_account_fields(
                 obj.remove(&oauth_field(p, kind));
             }
         }
+        // 按账号内嵌 ID 的键（键名里带着账号标识）必须清掉，否则切到 B 后
+        // live 里还留着 A 的缓存，客户端会按 A 解析。目标账号的副本由下面的
+        // carry-over 补回。
+        obj.retain(|k, _| !is_account_scoped_key(k));
         obj.insert(FIELD_TOKEN.into(), json!(tok));
         obj.insert(FIELD_ACTIVE_PROVIDER.into(), json!(ap));
         for kind in ["access_token", "refresh_token", "user_info"] {
@@ -387,8 +393,45 @@ pub fn merge_account_fields(
                 obj.insert(key, v.clone());
             }
         }
+        // carry-over：源存档独有、live 缺失的非身份字段单向补回。
+        // 典型场景：客户端重装/重置后 live 变干净，旧存档仍握有整份数据；
+        // live 已有的键一律不覆盖（live 是更新的一方）。
+        if let Some(src_obj) = source.as_object() {
+            for (k, v) in src_obj {
+                if k == FIELD_TOKEN || k == FIELD_ACTIVE_PROVIDER || is_oauth_identity_key(k) {
+                    continue;
+                }
+                if !obj.contains_key(k) {
+                    obj.insert(k.clone(), v.clone());
+                }
+            }
+        }
     }
     Ok(())
+}
+
+/// 凭据里「按账号区分」的键前缀。
+///
+/// 这类键把账号标识编码进了键名（如 `project-key-location:v1:["https://bigmodel.cn",
+/// "bigmodel","<account-id>",...]` 的 URL 编码形式），切换账号时必须换掉整条键，
+/// 否则新账号会在旧账号的缓存上解析项目/资源。
+///
+/// **维护约定**：客户端升级后若发现新的按账号键（键名里内嵌账号 ID、org ID、
+/// workspace ID），在这里加一行前缀即可，`merge_drops_account_scoped_keys` 会覆盖。
+/// 判断标准是「键名是否随账号变化」，而不是「值是否敏感」。
+pub const ACCOUNT_SCOPED_PREFIXES: [&str; 1] = ["project-key-location:v1:"];
+
+fn is_account_scoped_key(k: &str) -> bool {
+    ACCOUNT_SCOPED_PREFIXES.iter().any(|p| k.starts_with(p))
+}
+
+/// 两个已知家族的 oauth 身份字段（access_token / refresh_token / user_info）。
+fn is_oauth_identity_key(k: &str) -> bool {
+    [PROVIDER_ZAI, PROVIDER_BIGMODEL].iter().any(|p| {
+        ["access_token", "refresh_token", "user_info"]
+            .iter()
+            .any(|kind| k == oauth_field(p, kind))
+    })
 }
 
 // --------------- 通用 JSON IO（原子写） ---------------
@@ -722,6 +765,85 @@ mod tests {
         // live 结构异常 → 拒绝
         let mut junk = json!("not-object");
         assert!(merge_account_fields(&mut junk, &source, PROVIDER_ZAI).is_err());
+    }
+
+    /// carry-over：目标快照里有、live 里没有的非身份字段要补回来。
+    /// 场景：客户端重装/被重置后 live 变干净了，旧存档仍握有客户端的授权数据。
+    #[test]
+    fn merge_carries_over_snapshot_only_fields() {
+        let mut source = zai_creds();
+        source["mcp:oauth:abc:tokens"] = json!("enc:v1:snapshot-tokens");
+        source["mcp:oauth:abc:client_information"] = json!("enc:v1:snapshot-client");
+        let mut live = json!({
+            FIELD_TOKEN: "enc:v1:old.token",
+            FIELD_ACTIVE_PROVIDER: "enc:v1:old-provider",
+            "unknown_future_field": "live-value"
+        });
+        merge_account_fields(&mut live, &source, PROVIDER_ZAI).unwrap();
+        assert_eq!(
+            live["mcp:oauth:abc:tokens"],
+            json!("enc:v1:snapshot-tokens"),
+            "快照独有字段必须单向补进 live"
+        );
+        assert_eq!(
+            live["mcp:oauth:abc:client_information"],
+            json!("enc:v1:snapshot-client")
+        );
+        assert_eq!(
+            live["unknown_future_field"],
+            json!("live-value"),
+            "live 已有的未知字段不能被快照覆盖（live 更新）"
+        );
+    }
+
+    /// 按账号内嵌 ID 的键（project-key-location:v1:<urlencoded>）必须被清掉：
+    /// 否则切到 B 之后 live 里还留着 A 的 project key，客户端会按错账号解析项目。
+    #[test]
+    fn merge_drops_account_scoped_keys() {
+        let a_key = "project-key-location:v1:%5B%22https%3A%2F%2Fbigmodel.cn%22%2C%22bigmodel%22%2C%2253731781763549728%22%5D";
+        let b_key = "project-key-location:v1:%5B%22https%3A%2F%2Fbigmodel.cn%22%2C%22bigmodel%22%2C%2245261793623936293%22%5D";
+        let mut source = zai_creds();
+        source[b_key] = json!("enc:v1:target-project");
+        let mut live = json!({
+            FIELD_TOKEN: "enc:v1:old.token",
+            FIELD_ACTIVE_PROVIDER: "enc:v1:old-provider",
+            a_key: "enc:v1:old-project",
+            "unrelated": "keep-me"
+        });
+        merge_account_fields(&mut live, &source, PROVIDER_ZAI).unwrap();
+        assert!(live.get(a_key).is_none(), "旧账号的按账号字段必须移除");
+        assert_eq!(
+            live[b_key],
+            json!("enc:v1:target-project"),
+            "目标账号的键要补回"
+        );
+        assert_eq!(live["unrelated"], json!("keep-me"));
+        assert!(ACCOUNT_SCOPED_PREFIXES.iter().any(|p| a_key.starts_with(p)));
+    }
+
+    /// 客户端再新增字段（MCP 一类）时，不能因为「Hub 不认识」就删掉。
+    #[test]
+    fn merge_preserves_every_unknown_client_field() {
+        let mut live = zai_creds();
+        for k in [
+            "mcp:oauth:x:tokens",
+            "mcp:oauth:x:pending_authorization",
+            "brand-new:field:v9",
+            "another_unknown",
+        ] {
+            live[k] = json!("client-value");
+        }
+        let mut source = zai_creds();
+        source["unrelated_to_identity"] = json!("from-snapshot");
+        merge_account_fields(&mut live, &source, PROVIDER_ZAI).unwrap();
+        for k in [
+            "mcp:oauth:x:tokens",
+            "mcp:oauth:x:pending_authorization",
+            "brand-new:field:v9",
+            "another_unknown",
+        ] {
+            assert_eq!(live[k], json!("client-value"), "未知字段 {} 被删了", k);
+        }
     }
 
     #[test]

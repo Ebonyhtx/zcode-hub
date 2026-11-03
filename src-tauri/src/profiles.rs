@@ -3,7 +3,8 @@ use std::path::PathBuf;
 
 use crate::benefits::{load_benefits_once, persist_benefits, BENEFITS};
 use crate::crypto::{
-    decode_bundle, decrypt_value, encode_bundle, encrypt_value, read_snapshot_value, write_snapshot,
+    decode_bundle, decrypt_value, encode_bundle, encrypt_value, read_snapshot_checked,
+    read_snapshot_value, write_snapshot,
 };
 use crate::formats::{self, read_json, write_json, CRED_FILE, ENC_PREFIX};
 use crate::history;
@@ -12,7 +13,9 @@ use crate::identity::{
     find_profile_by_fingerprint, unique_profile_dir,
 };
 use crate::quota::{load_quota_cache_once, persist_quota_cache, QUOTA_CACHE};
-use crate::util::{app_data_dir, audit_log, denied, opaque_key, profiles_dir, safe_key, trash_dir};
+use crate::util::{
+    app_data_dir, audit_log, cred_path, denied, opaque_key, profiles_dir, safe_key, trash_dir,
+};
 
 pub(crate) fn cleanup_profile_caches(key: &str) {
     load_benefits_once();
@@ -415,6 +418,46 @@ pub(crate) fn inspect_bundle(path: String, password: String) -> serde_json::Valu
     }
     json!({"ok": true, "version": version, "accounts": items, "count": items.len(),
            "duplicates": duplicates, "relogin": relogin, "invalid": invalid})
+}
+
+/// 用当前 live 凭据刷新某份存档（仅当它是当前登录账号时）。
+///
+/// 非当前账号没有可用的 live 状态——它的"最新"数据只能来自切换那一刻，
+/// 所以这里明确拒绝而不是假装刷新。切换 A→B 时 A 的存档已被
+/// `preserve_current_login` 刷新，这是非当前账号唯一的自愈路径。
+#[tauri::command(async)]
+pub(crate) fn refresh_profile(key: String) -> serde_json::Value {
+    if let Err(e) = safe_key(&key) {
+        return denied(e);
+    }
+    let dir = profiles_dir().join(&key);
+    if !dir.exists() {
+        return json!({"ok": false, "error": "账号不存在"});
+    }
+    let live = match read_json(&cred_path()) {
+        Ok(v) => v,
+        Err(_) => return json!({"ok": false, "error": "当前没有可用的登录凭据，无法刷新存档"}),
+    };
+    let live_fp = match cred_fingerprint(&live) {
+        Some(fp) => fp,
+        None => return json!({"ok": false, "error": "当前登录凭据无法识别账号"}),
+    };
+    // 只有当前登录账号才能刷新：指纹不符说明这份存档属于别的账号
+    let stored = read_snapshot_checked(&dir).ok();
+    let stored_fp = stored.as_ref().and_then(cred_fingerprint);
+    if stored_fp.as_deref() != Some(live_fp.as_str()) {
+        return json!({"ok": false, "code": "not_current",
+            "error": "只能刷新当前登录账号的存档；切换到此账号后会自动刷新"});
+    }
+    if let Err(e) = write_snapshot(&dir, &live) {
+        return json!({"ok": false, "error": format!("刷新存档失败: {}", e)});
+    }
+    let mut meta = read_json(&dir.join("meta.json")).ok().unwrap_or(json!({}));
+    crate::identity::stamp_snapshot_meta(&mut meta, &live);
+    let _ = write_json(&dir.join("meta.json"), &meta);
+    let fields = live.as_object().map(|o| o.len()).unwrap_or(0);
+    audit_log("refresh", Some(&key), json!({"fields": fields}));
+    json!({"ok": true, "key": key, "fields": fields})
 }
 
 pub(crate) fn known_profile_key_map() -> std::collections::HashMap<String, String> {

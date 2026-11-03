@@ -30,6 +30,8 @@ var I18N = {
     spark_label: "趋势", spark_hint: "最近几次采样的剩余额度走势",
     search_ph: "搜索账号或标签…", filter_all: "全部", filter_current: "当前", filter_benefits: "有福利", filter_expired: "已过期", no_match: "没有匹配的账号",
     pin: "置顶", unpin: "取消置顶", tags: "标签", tags_title: "编辑标签", tags_sub: "用逗号分隔；最多 8 个，每个最多 16 字。", tags_ph: "例如：工作, 团队", tags_saved: "标签已保存", tags_fail: "保存标签失败：{e}",
+    stale_tag: "旧 {v}", stale_hint: "存档来自 {v}，只有 {n} 个字段，缺少客户端新增的字段。切换时会自动合并保留，也可以现在就刷新。", stale_refresh: "刷新存档", stale_refreshed: "存档已刷新：{n} 个字段", stale_refresh_fail: "刷新存档失败：{e}",
+    zcode_verified: "已验证至 {v}", zcode_unverified: "未验证",
     quota_notify: "额度提醒", quota_notify_hint: "即将到期或不足 10% 时通知", auto_backup: "自动备份", auto_backup_hint: "每天备份到本机，保留 7 份", update_notify: "新版本提醒", update_notify_hint: "每 24 小时检查一次",
     backup_now: "立即备份", backup_done: "备份完成：{n} 个账号", backup_fail: "备份失败：{e}", diagnostics: "导出诊断报告", diag_done: "诊断报告已导出", diag_fail: "导出失败：{e}",
     backup_dir: "备份目录", open_backup_dir: "打开备份目录", backup_info: "共 {n} 份备份", backup_info_none: "暂无备份", backup_open_fail: "打开备份目录失败：{e}", backup_open_toast: "已打开备份目录",
@@ -45,7 +47,7 @@ var I18N = {
     claim_timeout: "等待验证超时，请重试。", claim_bg: "领取仍在后台进行，完成后会自动刷新。", claim_reopen: "重新打开验证页",
     claim_steps_prep: "准备", claim_steps_verify: "浏览器验证", claim_steps_claim: "领取",
     switch_title: "切换账号", switch_body: "从「{from}」切换到「{to}」。\n{mode}", switch_hot: "热切换：客户端不重启，直接更换登录身份。", switch_cold: "ZCode 将自动关闭并重启。",
-    switch_expired: "目标账号的登录已过期，切换后需要在 ZCode 里重新登录。", switch_safe: "已用安全模式切换（只替换账号身份字段，保留客户端未知字段）。",
+    switch_expired: "目标账号的登录已过期，切换后需要在 ZCode 里重新登录。", switched_strict: "已用严格模式切换并重启 ZCode。",
     switched_hot: "已热切换。客户端左下角的账号名需要重启 ZCode 才会更新。", switched_re: "已切换并重启 ZCode。", switched_nore: "凭据已切换，ZCode 未自动重启，请手动打开。", switch_fail: "切换失败：{e}",
     switching: "切换中…", open_client: "打开 ZCode", restart_client: "重启 ZCode 以同步名称", hot_notice: "已热切换为「{name}」。客户端左下角账号名来自本地缓存，需重启 ZCode 才会更新。",
     add_title: "添加账号", add_sub: "选择账号类型，在浏览器完成官方登录后自动存入账号库。",
@@ -59,7 +61,7 @@ var I18N = {
     sys_sec: "系统", autostart: "开机自启", autostart_hint: "写入启动文件夹快捷方式", start_min: "启动时最小化", start_min_hint: "启动后直接驻留托盘",
     close_action: "关闭窗口时", close_tray: "最小化到托盘", close_quit: "退出程序",
     hot: "热切换（实验）", hot_hint: "不重启客户端直接换号，失败自动回退", hot_note: "热切换不重启客户端：套餐与额度立即按新账号生效，但左下角账号名来自客户端本地缓存，需重启 ZCode 才会更新。",
-    safe_mode: "安全模式", safe_hint: "客户端格式异常或新版本时更稳：只替换账号身份字段，保留未知字段", lang: "语言",
+    safe_mode: "严格模式", safe_hint: "当前凭据缺失或结构异常时拒绝切换，而不是留档后继续", lang: "语言",
     kill: "关闭 ZCode", claim_history: "领取历史", claim_history_title: "领取历史", claim_history_sub: "只记录本机领取的套餐与时间，不含账号信息。", no_claim_history: "暂无领取记录",
     bak_title: "备份 / 导入账号库", bak_sub: "备份文件用口令加密（PBKDF2 + AES-256-GCM），可在其他电脑导入恢复；口令丢失无法找回。",
     export_to: "导出到桌面", bak_ph: "设置口令（至少 6 位）", export_btn: "导出 .zhb", import_from: "从文件导入",
@@ -105,6 +107,8 @@ var I18N = {
     spark_label: "trend", spark_hint: "Remaining quota across recent samples",
     search_ph: "Search accounts or tags…", filter_all: "All", filter_current: "Current", filter_benefits: "Has benefits", filter_expired: "Expired", no_match: "No matching accounts",
     pin: "Pin", unpin: "Unpin", tags: "Tags", tags_title: "Edit tags", tags_sub: "Comma-separated; up to 8 tags, 16 chars each.", tags_ph: "e.g. work, team", tags_saved: "Tags saved", tags_fail: "Failed to save tags: {e}",
+    stale_tag: "old {v}", stale_hint: "Saved by {v} with only {n} fields — missing fields the client added since. Switching merges them in automatically, or refresh now.", stale_refresh: "Refresh snapshot", stale_refreshed: "Snapshot refreshed: {n} fields", stale_refresh_fail: "Failed to refresh snapshot: {e}",
+    zcode_verified: "verified up to {v}", zcode_unverified: "unverified",
     quota_notify: "Quota alerts", quota_notify_hint: "Notify when expiring soon or below 10%", auto_backup: "Auto backup", auto_backup_hint: "Daily local backup, keep 7 copies", update_notify: "Update alerts", update_notify_hint: "Check every 24 hours",
     backup_now: "Back up now", backup_done: "Backup complete: {n} accounts", backup_fail: "Backup failed: {e}", diagnostics: "Export diagnostics", diag_done: "Diagnostics exported", diag_fail: "Export failed: {e}",
     backup_dir: "Backup folder", open_backup_dir: "Open backup folder", backup_info: "{n} backup(s)", backup_info_none: "No backups yet", backup_open_fail: "Failed to open the backup folder: {e}", backup_open_toast: "Opened the backup folder",
@@ -120,7 +124,7 @@ var I18N = {
     claim_timeout: "Verification timed out. Please retry.", claim_bg: "Claim is still running in the background; the UI will refresh when it finishes.", claim_reopen: "Reopen verification page",
     claim_steps_prep: "Prepare", claim_steps_verify: "Browser check", claim_steps_claim: "Claim",
     switch_title: "Switch account", switch_body: "Switch from \"{from}\" to \"{to}\".\n{mode}", switch_hot: "Hot switch: the client keeps running and the identity is swapped in place.", switch_cold: "ZCode will close and restart.",
-    switch_expired: "The target account's session has expired. You'll need to sign in again in ZCode.", switch_safe: "Switched in safe mode (account identity fields only; unknown client fields preserved).",
+    switch_expired: "The target account's session has expired. You'll need to sign in again in ZCode.", switched_strict: "Switched in strict mode and restarted ZCode.",
     switched_hot: "Hot-switched. ZCode's bottom-left account name updates only after a restart.", switched_re: "Switched and restarted ZCode.", switched_nore: "Credentials switched — start ZCode manually.", switch_fail: "Switch failed: {e}",
     switching: "Switching…", open_client: "Open ZCode", restart_client: "Restart ZCode to sync name", hot_notice: "Hot-switched to \"{name}\". The bottom-left name comes from ZCode's cache and updates only after a restart.",
     add_title: "Add account", add_sub: "Pick a provider; finish the official login in your browser and it is saved automatically.",
@@ -134,7 +138,7 @@ var I18N = {
     sys_sec: "System", autostart: "Launch at startup", autostart_hint: "Startup-folder shortcut", start_min: "Start minimized", start_min_hint: "Stay in the tray after launch",
     close_action: "When closing", close_tray: "Minimize to tray", close_quit: "Quit app",
     hot: "Hot switch (exp.)", hot_hint: "Switch without restarting; falls back on failure", hot_note: "Hot switch keeps the client running: plan and quota apply immediately, but the bottom-left account name comes from the client cache and only updates after restarting ZCode.",
-    safe_mode: "Safe mode", safe_hint: "Safer when the client format changed: replace identity fields only, preserve unknown fields", lang: "Language",
+    safe_mode: "Strict mode", safe_hint: "Refuse to switch when the live credentials are missing or malformed, instead of archiving them and continuing", lang: "Language",
     kill: "Close ZCode", claim_history: "Claim history", claim_history_title: "Claim history", claim_history_sub: "Only plans and times claimed on this machine; no account identifiers.", no_claim_history: "No claims yet",
     bak_title: "Backup / Import accounts", bak_sub: "Bundles are password-encrypted (PBKDF2 + AES-256-GCM) and portable across machines; a lost password cannot be recovered.",
     export_to: "Export to Desktop", bak_ph: "Set a password (at least 6 chars)", export_btn: "Export .zhb", import_from: "Import from file",
@@ -526,6 +530,7 @@ function foldAll(v) {
 function cardSig(p) {
   return [LANG, S.sort, S.sort === "manual" ? S.order.indexOf(p.key) : "", p.key, p.label, p.is_current, p.jwt_expired, p.error || "",
     JSON.stringify(p.tags || []), S.pins[p.key] ? 1 : 0,
+    p.stale ? 1 : 0, p.client_version || "", p.field_count || 0,
     JSON.stringify(S.quota[p.key] || null),
     JSON.stringify((S.st.benefits || {})[p.key] || null),
     JSON.stringify((S.history[p.key] || {}).forecast || null),
@@ -544,6 +549,29 @@ function manualMoveButtons(p) {
     + '<button class="icon-btn small" data-action="move-down" data-key="' + esc(p.key) + '"' + (down ? "" : " disabled")
     + ' aria-label="' + esc(t("move_down")) + '" title="' + esc(t("move_down")) + '"><svg class="icon"><use href="#i-down"/></svg></button>';
 }
+/* 存档落后提示：只有当前账号能刷新（其他账号没有 live 状态可抓）。 */
+function staleNoticeHtml(p) {
+  if (!p.stale) return "";
+  var hint = t("stale_hint", {v: p.client_version || "?", n: p.field_count || 0});
+  if (!p.is_current) {
+    return '<div class="stale-note"><span class="mut">' + esc(hint) + '</span></div>';
+  }
+  return '<div class="stale-note"><span class="mut">' + esc(hint) + '</span>'
+    + '<button class="linkbtn" data-action="refresh-profile" data-key="' + esc(p.key) + '">'
+    + esc(t("stale_refresh")) + '</button></div>';
+}
+
+function refreshProfile(key) {
+  api("refresh_profile", { key: key }).then(function(r) {
+    if (!r || r.ok === false) {
+      pushToast(t("stale_refresh_fail", {e: (r && r.error) || "?"}), "bad");
+      return;
+    }
+    pushToast(t("stale_refreshed", {n: r.fields || 0}), "ok");
+    refreshAll(false, null, null);
+  }).catch(function(e) { pushToast(t("stale_refresh_fail", {e: errText(e)}), "bad"); });
+}
+
 function cardHtml(p) {
   var m = provMeta(p.provider);
   var folded = isFolded(p);
@@ -552,6 +580,7 @@ function cardHtml(p) {
   var benCount = bd && bd.ok ? (bd.count || 0) : 0;
   var tags = (p.is_current ? '<span class="tag cur">' + esc(t("current")) + '</span>' : "")
     + (p.jwt_expired ? '<span class="tag expired">' + esc(t("expired")) + '</span>' : "")
+    + (p.stale ? '<span class="tag warn" title="' + esc(t("stale_hint", {v: p.client_version || "?", n: p.field_count || 0})) + '">' + esc(t("stale_tag", {v: p.client_version || "?"})) + '</span>' : "")
     + (p.tags || []).map(function(tg) { return '<span class="tag tag-user">' + esc(tg) + '</span>'; }).join("");
   var body;
   if (p.error) {
@@ -559,7 +588,7 @@ function cardHtml(p) {
   } else {
     var benefit = benefitHtml(bd, p), quiet = "";
     if (benefit.indexOf('bstate quiet') !== -1) { quiet = benefit; benefit = ""; }
-    body = benefit + bucketsHtml(qd, p) + footerHtml(p, qd, quiet);
+    body = benefit + bucketsHtml(qd, p) + staleNoticeHtml(p) + footerHtml(p, qd, quiet);
   }
   return '<div class="acct' + (p.is_current ? " cur" : "") + (folded ? " folded" : "") + '" data-key="' + esc(p.key) + '" data-provider="' + esc(p.provider) + '" data-sig="' + esc(cardSig(p)) + '">'
     + '<div class="acct-head" data-action="foldhead" data-key="' + esc(p.key) + '">'
@@ -1109,7 +1138,16 @@ function syncForm(force) {
   if (force || ae !== el("langSel")) el("langSel").value = LANG;
   el("autoStartTgl").checked = !!S.st.autostart;
   el("cfgVer").textContent = "v" + (S.st.version || "?");
-  el("zcodeVer").textContent = S.st.compat && S.st.compat.zcode_version ? "ZCode v" + S.st.compat.zcode_version : "";
+  // 版本只在设置页显示（顶部不弹条）：未验证只是信息，不是故障
+  var cp = S.st.compat || {};
+  var vtxt = "";
+  if (cp.zcode_version) {
+    vtxt = "ZCode v" + cp.zcode_version;
+    if (cp.version_status && cp.version_status !== "match") {
+      vtxt += "（" + t("zcode_unverified") + "，" + t("zcode_verified", {v: cp.verified_version || "?"}) + "）";
+    }
+  }
+  el("zcodeVer").textContent = vtxt;
 }
 function saveSettings(patch, quiet) {
   return api("set_settings", settingsBody(patch)).then(function(r) {
@@ -1157,11 +1195,15 @@ function doSwitch(key) {
     S.busyKey = key; renderAll();
     api("switch_profile", { key: key, hot: hot }).then(function(r) {
       if (r && r.ok) {
-        if (r.safe) pushToast(t("switch_safe"), "ok");
-        else if (r.hot) {
+        // mode 是后端明确的字符串（cold/hot/strict），不再靠 hot/safe 键的存在与否猜
+        if (r.mode === "hot") {
           S.notice = { text: t("hot_notice", {name: displayLabel(p.label)}), label: t("restart_client"), act: "restart" };
           pushToast(t("switched_hot"), "ok");
-        } else pushToast(r.relaunched ? t("switched_re") : t("switched_nore"), r.relaunched ? "ok" : "warn");
+        } else if (r.mode === "strict") {
+          pushToast(r.relaunched ? t("switched_strict") : t("switched_nore"), r.relaunched ? "ok" : "warn");
+        } else {
+          pushToast(r.relaunched ? t("switched_re") : t("switched_nore"), r.relaunched ? "ok" : "warn");
+        }
         refreshAll(false, key, null);
       } else {
         pushToast(t("switch_fail", {e: (r && r.error) || "?"}), "bad");
@@ -1730,6 +1772,7 @@ document.addEventListener("click", function(e) {
     case "tags-cancel": hideModal("tagModal"); break;
     case "pin": togglePin(key); break;
     case "tags": doTags(key); break;
+    case "refresh-profile": refreshProfile(key); break;
     case "foldhead": case "foldchev":
       var fp = profileByKey(key);
       if (fp) setFold(key, !isFolded(fp));
