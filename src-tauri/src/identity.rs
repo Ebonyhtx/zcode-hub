@@ -170,6 +170,19 @@ pub(crate) fn snapshot_is_stale(meta: &Value, live_field_count: usize, live_vers
     live_field_count > archived as usize
 }
 
+/// 卡片上是否显示「旧」标签：只有**既不是当前账号、也没过期**的存档才标。
+/// - 当前账号的存档刚被 live 刷新过，不存在落后；
+/// - 登录已过期的存档没有有效 live 可抓，刷新也无从谈起，标「旧」只会误导。
+pub(crate) fn show_as_stale(
+    is_current: bool,
+    jwt_expired: bool,
+    meta: &Value,
+    live_field_count: usize,
+    live_version: &str,
+) -> bool {
+    !is_current && !jwt_expired && snapshot_is_stale(meta, live_field_count, live_version)
+}
+
 #[tauri::command(async)]
 pub(crate) fn capture_profile(name: Option<String>) -> serde_json::Value {
     let src = cred_path();
@@ -758,6 +771,26 @@ mod tests {
             let plan2 = build_merge_plan(Some(&json!({"x": 1})), &json!({}), formats::PROVIDER_ZAI);
             assert!(!plan2.used_merge);
         }
+    }
+
+    /// 「旧」标签只给可刷新的存档：当前账号、已过期账号都不标。
+    #[test]
+    fn stale_tag_only_for_non_current_non_expired() {
+        let stale_meta = json!({"field_count": 7});
+        // 普通账号 + 字段更少 → 标
+        assert!(show_as_stale(false, false, &stale_meta, 10, "3.17.2"));
+        // 当前账号 → 不标（刚被 live 刷新过）
+        assert!(!show_as_stale(true, false, &stale_meta, 10, "3.17.2"));
+        // 登录已过期 → 不标（没有有效 live 可刷新，标了只会误导）
+        assert!(!show_as_stale(false, true, &stale_meta, 10, "3.17.2"));
+        // 字段数不少 → 不标
+        assert!(!show_as_stale(
+            false,
+            false,
+            &json!({"field_count": 10}),
+            10,
+            "3.17.2"
+        ));
     }
 
     #[test]

@@ -347,6 +347,25 @@ test("product version with four parts is shown as x.y.z", async ({ page }) => {
   await expect(page.locator("#zcodeVer")).toHaveText("ZCode v3.17.2");
 });
 
+test("stale snapshot with unknown client version shows no placeholder", async ({ page }) => {
+  // v1.11.0 前的旧存档：backfill 补了 field_count 但没有 client_version
+  await page.addInitScript(() => { window.__MOCK_OVERRIDES__ = { staleUnknownVersion: true }; });
+  await page.reload();
+  const card = page.locator('.acct[data-key="gamma"]');
+  await expect(card.locator(".tag.warn")).toHaveText("旧");
+  // 关键：不能把 "?" 露给用户
+  await expect(card.locator(".tag.warn")).not.toContainText("?");
+  await card.locator(".acct-head").click();
+  await expect(card.locator(".stale-note")).toContainText("7");
+  await expect(card.locator(".stale-note")).not.toContainText("?");
+});
+
+test("expired snapshots are not marked stale", async ({ page }) => {
+  // gamma 在 mock 里是 jwt_expired；过期存档没有有效 live 可刷新，不该标「旧」
+  await expect(page.locator('.acct[data-key="gamma"] .tag.warn')).toHaveCount(0);
+  await expect(page.locator('.acct[data-key="gamma"] .tag.expired')).toHaveCount(1);
+});
+
 test("responsive grid switches between one and two columns", async ({ page }) => {
   await page.setViewportSize({ width: 700, height: 800 });
   const one = await page.evaluate(() => getComputedStyle(document.getElementById("acctList")).gridTemplateColumns);

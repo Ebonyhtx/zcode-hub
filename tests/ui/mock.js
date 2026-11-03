@@ -7,7 +7,7 @@
     profiles: [
       { key: "alpha", label: "Alpha", captured_at: "2026-11-01T10:00:00Z", is_current: true, provider: "zai", jwt_expired: false, tags: ["work"], client_version: "3.17.2", field_count: 10, stale: false },
       { key: "beta", label: "Beta", captured_at: "2026-11-01T11:00:00Z", is_current: false, provider: "bigmodel", jwt_expired: false, tags: [], client_version: "3.17.0", field_count: 7, stale: true },
-      { key: "gamma", label: "Gamma", captured_at: "2026-11-01T12:00:00Z", is_current: false, provider: "zai", jwt_expired: true, tags: [], client_version: "3.17.2", field_count: 10, stale: false }
+      { key: "gamma", label: "Gamma", captured_at: "2026-11-01T12:00:00Z", is_current: false, provider: "zai", jwt_expired: true, tags: [], client_version: "", field_count: 7, stale: false },
     ],
     zcode_running: true,
     process_error: null,
@@ -27,7 +27,7 @@
     autostart: false,
     compat: { ok: true, errors: [], notes: [], installed: true, zcode_version: "3.17.2", verified_version: "3.17.2", version_status: "match" },
     // 测试可在 addInitScript 里改这个对象，控制「客户端已升级」等场景
-    overrides: { compat: null, staleAlpha: false, refreshed: false },
+    overrides: { compat: null, staleAlpha: false, staleUnknownVersion: false, refreshed: false },
     update_available: null
   };
   var quota = {
@@ -53,6 +53,11 @@
     if (ov.staleAlpha && !ov.refreshed) {
       var a = st.profiles.filter(function (p) { return p.key === "alpha"; })[0];
       if (a) { a.stale = true; a.field_count = 6; a.client_version = "3.17.2"; }
+    }
+    // v1.11.0 前的旧存档：有 field_count（backfill 补的）但没有 client_version
+    if (ov.staleUnknownVersion) {
+      var b = st.profiles.filter(function (p) { return p.key === "gamma"; })[0];
+      if (b) { b.stale = true; b.field_count = 7; b.client_version = ""; }
     }
     return st;
   }

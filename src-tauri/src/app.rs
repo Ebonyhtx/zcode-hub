@@ -9,7 +9,7 @@ use crate::client::{compat_report, launch_zcode_process, zcode_exe_path, zcode_r
 use crate::crypto::{decrypt_value, read_snapshot_checked};
 use crate::formats::{self, read_json, write_json};
 use crate::identity::{
-    account_label, cred_fingerprint, jwt_expired, profile_label, snapshot_is_stale, ProfileInfo,
+    account_label, cred_fingerprint, jwt_expired, profile_label, show_as_stale, ProfileInfo,
 };
 use crate::platform;
 use crate::profiles::all_profile_keys;
@@ -272,7 +272,8 @@ pub(crate) fn get_state() -> serde_json::Value {
                         .get("field_count")
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0);
-                    let stale = !ic && snapshot_is_stale(&meta, live_fields, &live_ver);
+                    // 过期/当前账号不标「旧」（见 show_as_stale 的文档）
+                    let stale = show_as_stale(ic, je, &meta, live_fields, &live_ver);
                     profiles.push(ProfileInfo {
                         key: name,
                         label,

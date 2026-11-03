@@ -30,7 +30,8 @@ var I18N = {
     spark_label: "趋势", spark_hint: "最近几次采样的剩余额度走势",
     search_ph: "搜索账号或标签…", filter_all: "全部", filter_current: "当前", filter_benefits: "有福利", filter_expired: "已过期", no_match: "没有匹配的账号",
     pin: "置顶", unpin: "取消置顶", tags: "标签", tags_title: "编辑标签", tags_sub: "用逗号分隔；最多 8 个，每个最多 16 字。", tags_ph: "例如：工作, 团队", tags_saved: "标签已保存", tags_fail: "保存标签失败：{e}",
-    stale_tag: "旧 {v}", stale_hint: "存档来自 {v}，只有 {n} 个字段，缺少客户端新增的字段。切换时会自动合并保留，也可以现在就刷新。", stale_refresh: "刷新存档", stale_refreshed: "存档已刷新：{n} 个字段", stale_refresh_fail: "刷新存档失败：{e}",
+    stale_tag: "旧", stale_hint: "存档只有 {n} 个字段，缺少客户端新增的字段。切换时会自动合并保留，也可以现在就刷新。", stale_refresh: "刷新存档", stale_refreshed: "存档已刷新：{n} 个字段", stale_refresh_fail: "刷新存档失败：{e}",
+    stale_tag_ver: "旧 {v}", stale_hint_ver: "存档来自 {v}，只有 {n} 个字段，缺少客户端新增的字段。切换时会自动合并保留，也可以现在就刷新。",
     zcode_verified: "已验证至 {v}", zcode_unverified: "未验证",
     quota_notify: "额度提醒", quota_notify_hint: "即将到期或不足 10% 时通知", auto_backup: "自动备份", auto_backup_hint: "每天备份到本机，保留 7 份", update_notify: "新版本提醒", update_notify_hint: "每 24 小时检查一次",
     backup_now: "立即备份", backup_done: "备份完成：{n} 个账号", backup_fail: "备份失败：{e}", diagnostics: "导出诊断报告", diag_done: "诊断报告已导出", diag_fail: "导出失败：{e}",
@@ -108,7 +109,8 @@ var I18N = {
     spark_label: "trend", spark_hint: "Remaining quota across recent samples",
     search_ph: "Search accounts or tags…", filter_all: "All", filter_current: "Current", filter_benefits: "Has benefits", filter_expired: "Expired", no_match: "No matching accounts",
     pin: "Pin", unpin: "Unpin", tags: "Tags", tags_title: "Edit tags", tags_sub: "Comma-separated; up to 8 tags, 16 chars each.", tags_ph: "e.g. work, team", tags_saved: "Tags saved", tags_fail: "Failed to save tags: {e}",
-    stale_tag: "old {v}", stale_hint: "Saved by {v} with only {n} fields — missing fields the client added since. Switching merges them in automatically, or refresh now.", stale_refresh: "Refresh snapshot", stale_refreshed: "Snapshot refreshed: {n} fields", stale_refresh_fail: "Failed to refresh snapshot: {e}",
+    stale_tag: "old", stale_hint: "Saved with only {n} fields — missing fields the client added since. Switching merges them in automatically, or refresh now.", stale_refresh: "Refresh snapshot", stale_refreshed: "Snapshot refreshed: {n} fields", stale_refresh_fail: "Failed to refresh snapshot: {e}",
+    stale_tag_ver: "old {v}", stale_hint_ver: "Saved by {v} with only {n} fields — missing fields the client added since. Switching merges them in automatically, or refresh now.",
     zcode_verified: "verified up to {v}", zcode_unverified: "unverified",
     quota_notify: "Quota alerts", quota_notify_hint: "Notify when expiring soon or below 10%", auto_backup: "Auto backup", auto_backup_hint: "Daily local backup, keep 7 copies", update_notify: "Update alerts", update_notify_hint: "Check every 24 hours",
     backup_now: "Back up now", backup_done: "Backup complete: {n} accounts", backup_fail: "Backup failed: {e}", diagnostics: "Export diagnostics", diag_done: "Diagnostics exported", diag_fail: "Export failed: {e}",
@@ -551,10 +553,20 @@ function manualMoveButtons(p) {
     + '<button class="icon-btn small" data-action="move-down" data-key="' + esc(p.key) + '"' + (down ? "" : " disabled")
     + ' aria-label="' + esc(t("move_down")) + '" title="' + esc(t("move_down")) + '"><svg class="icon"><use href="#i-down"/></svg></button>';
 }
-/* 存档落后提示：只有当前账号能刷新（其他账号没有 live 状态可抓）。 */
+/* 存档落后提示：只有当前账号能刷新（其他账号没有 live 状态可抓）。
+   版本未知时（v1.11.0 前的旧存档）用不带版本的文案，不要把 "?" 露给用户。 */
+function staleTagText(p) {
+  return p.client_version ? t("stale_tag_ver", {v: p.client_version}) : t("stale_tag");
+}
+function staleHintText(p) {
+  var n = p.field_count || 0;
+  return p.client_version
+    ? t("stale_hint_ver", {v: p.client_version, n: n})
+    : t("stale_hint", {n: n});
+}
 function staleNoticeHtml(p) {
   if (!p.stale) return "";
-  var hint = t("stale_hint", {v: p.client_version || "?", n: p.field_count || 0});
+  var hint = staleHintText(p);
   if (!p.is_current) {
     return '<div class="stale-note"><span class="mut">' + esc(hint) + '</span></div>';
   }
@@ -582,7 +594,7 @@ function cardHtml(p) {
   var benCount = bd && bd.ok ? (bd.count || 0) : 0;
   var tags = (p.is_current ? '<span class="tag cur">' + esc(t("current")) + '</span>' : "")
     + (p.jwt_expired ? '<span class="tag expired">' + esc(t("expired")) + '</span>' : "")
-    + (p.stale ? '<span class="tag warn" title="' + esc(t("stale_hint", {v: p.client_version || "?", n: p.field_count || 0})) + '">' + esc(t("stale_tag", {v: p.client_version || "?"})) + '</span>' : "")
+    + (p.stale ? '<span class="tag warn" title="' + esc(staleHintText(p)) + '">' + esc(staleTagText(p)) + '</span>' : "")
     + (p.tags || []).map(function(tg) { return '<span class="tag tag-user">' + esc(tg) + '</span>'; }).join("");
   var body;
   if (p.error) {
