@@ -27,14 +27,20 @@ pub fn crash_path(app_data: &Path) -> PathBuf {
 }
 
 /// 把绝对路径压成文件名：日志里不出现用户名/目录结构。
+///
+/// 不能只用 `Path::file_name()`：在 Linux/macOS 上反斜杠不是分隔符，
+/// Windows 风格路径会被整串返回（用户名泄漏）。这里按两种分隔符手工切分，
+/// 使脱敏行为与运行平台无关。
 pub fn redact_path(p: &str) -> String {
     let trimmed = p.trim().trim_matches('"');
     if trimmed.is_empty() {
         return String::new();
     }
-    std::path::Path::new(trimmed)
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
+    trimmed
+        .rsplit(['\\', '/'])
+        .next()
+        .filter(|s| !s.is_empty())
+        .map(String::from)
         .unwrap_or_else(|| "?".into())
 }
 
@@ -318,6 +324,43 @@ mod tests {
         assert_eq!(tail(&p, 1).len(), 1);
         assert!(tail(&d.join("missing.log"), 5).is_empty());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 脱敏必须与运行平台无关：Windows 风格路径在 Linux/macOS 上同样不能泄漏用户名。
+    /// （CI 的 ubuntu/macOS job 曾因 `Path::file_name` 只在 Windows 切反斜杠而失败）
+    #[test]
+    fn redact_path_handles_both_separators_on_any_platform() {
+        // Windows 风格（无论当前在哪个 OS 跑）
+        assert_eq!(redact_path("D:\\x\\y\\ZCode.exe"), "ZCode.exe");
+        assert_eq!(
+            redact_path("C:\\Users\\alice\\zcode-hub\\src-tauri\\src\\identity.rs"),
+            "identity.rs"
+        );
+        // POSIX 风格
+        assert_eq!(redact_path("/home/alice/zcode-hub/ui/app.js"), "app.js");
+        assert_eq!(redact_path("src/sub/file.rs"), "file.rs");
+        // 混合分隔符与边界
+        assert_eq!(redact_path("C:\\a/b\\c.txt"), "c.txt");
+        assert_eq!(redact_path("  \"C:\\a\\b.exe\"  "), "b.exe");
+        assert_eq!(redact_path(""), "");
+        assert_eq!(redact_path("plain"), "plain");
+        // 关键断言：结果里绝不出现用户名
+        for p in [
+            "C:\\Users\\alice\\x\\y.rs",
+            "/home/alice/x/y.rs",
+            "D:\\zcode-hub\\profiles\\bob\\meta.json",
+        ] {
+            let out = redact_path(p);
+            assert!(
+                !out.contains("alice")
+                    && !out.contains("bob")
+                    && !out.contains('\\')
+                    && !out.contains('/'),
+                "脱敏后仍是路径或含用户名: {:?} -> {:?}",
+                p,
+                out
+            );
+        }
     }
 
     #[test]
