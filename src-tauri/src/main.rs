@@ -121,6 +121,7 @@ pub fn run() {
             backup::backup_now,
             backup::open_backup_dir,
             backup::get_backup_status,
+            backup::restore_latest_backup,
             diagnostics::export_diagnostics,
         ])
         .run(tauri::generate_context!())
