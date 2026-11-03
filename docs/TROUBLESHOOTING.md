@@ -33,7 +33,7 @@
 - 常见原因：换了 Windows 用户/机器、`snapkey` 被安全软件拦截、磁盘损坏。
 - 不要删除 `%APPDATA%\zcode-hub\snapkey`；删除会让所有存档永久不可解。
 - 有 `.zhb` 备份时，用导入恢复（跨机请用口令包，不要直接拷 profiles）。
-- 本机自动备份在 `%APPDATA%\zcode-hub\backups\`，保留最近 7 份。
+- 本机自动备份在 `%APPDATA%\zcode-hub\backups\`，保留最近 7 份；设置 →「备份目录」可直接打开并在旁边看到当前份数，备份完成 Toast 也有「打开备份目录」入口。
 
 ## 领取验证码打不开 / 一直等待
 
