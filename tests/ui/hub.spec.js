@@ -88,7 +88,7 @@ test("claim history exports to JSON", async ({ page }) => {
 test("settings can open the backup folder and shows backup count", async ({ page }) => {
   await page.locator('[data-action="cfg"]').click();
   await expect(page.locator("#cfgModal")).toBeVisible();
-  await expect(page.locator("#backupInfoTxt")).toHaveText("共 2 份备份");
+  await expect(page.locator("#backupInfoTxt")).toContainText("共 2 份备份");
   await page.locator('[data-action="cfg-openbackup"]').click();
   await expect.poll(() => page.evaluate(() =>
     window.__calls.filter(c => c.cmd === "open_backup_dir").length)).toBeGreaterThan(0);
@@ -102,6 +102,15 @@ test("backup toast offers a shortcut to the backup folder", async ({ page }) => 
   await page.locator('.toasts .linkbtn', { hasText: "打开备份目录" }).click();
   await expect.poll(() => page.evaluate(() =>
     window.__calls.filter(c => c.cmd === "open_backup_dir").length)).toBeGreaterThan(0);
+});
+
+test("latest local backup can be restored after confirmation", async ({ page }) => {
+  await page.locator('[data-action="cfg"]').click();
+  await expect(page.locator("#backupInfoTxt")).toContainText("最近");
+  await page.locator('[data-action="cfg-restorebackup"]').click();
+  await expect(page.locator("#confirmModal")).toBeVisible();
+  await page.locator('[data-action="confirm-ok"]').click();
+  await expect(page.locator(".toasts")).toContainText("已恢复 2 个账号");
 });
 
 test("responsive grid switches between one and two columns", async ({ page }) => {

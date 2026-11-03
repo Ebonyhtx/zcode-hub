@@ -78,7 +78,8 @@
             ] });
         case "import_bundle": return Promise.resolve({ ok: true, added: 1, skipped: 1, relogin: 0 });
         case "backup_now": return Promise.resolve({ ok: true, profiles: 3 });
-        case "get_backup_status": return Promise.resolve({ ok: true, count: 2, latest: "20261103-000001", path: "C:/Users/demo/AppData/Roaming/zcode-hub/backups" });
+        case "get_backup_status": return Promise.resolve({ ok: true, count: 2, latest: "20261103-000001", latest_at: "2026-11-03T00:00:00Z", path: "C:/Users/demo/AppData/Roaming/zcode-hub/backups" });
+        case "restore_latest_backup": return Promise.resolve({ ok: true, restored: 2, backup: "20261103-000001" });
         case "open_backup_dir": return Promise.resolve({ ok: true, path: "C:/Users/demo/AppData/Roaming/zcode-hub/backups" });
         case "export_diagnostics": return Promise.resolve({ ok: true, path: args.path });
         case "export_claim_history": return Promise.resolve({ ok: true, count: 2, path: args.path });

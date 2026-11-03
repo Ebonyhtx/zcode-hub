@@ -2,10 +2,10 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use crate::formats::write_json;
+use crate::formats::{read_json, write_json};
 use crate::platform;
 use crate::settings::{load_settings, save_settings};
-use crate::util::{app_data_dir, config_path, copy_dir_all, profiles_dir};
+use crate::util::{app_data_dir, audit_log, config_path, copy_dir_all, profiles_dir};
 
 /// 自动备份间隔：24 小时；保留最近 7 份（可在设置里改 auto_backup / backup_keep）。
 const BACKUP_INTERVAL_SECS: i64 = 24 * 3600;
@@ -24,7 +24,7 @@ pub(crate) fn ensure_backup_root() -> PathBuf {
     root
 }
 
-/// 现有备份数量 + 最近一次时间戳，用于设置页展示。
+/// 现有备份数量 + 最近一次时间，用于设置页展示。
 pub(crate) fn backup_status() -> Value {
     let root = backup_root();
     let dirs = backup_dirs(&root);
@@ -32,8 +32,71 @@ pub(crate) fn backup_status() -> Value {
         .last()
         .and_then(|p| p.file_name())
         .map(|n| n.to_string_lossy().to_string());
+    let latest_at = dirs
+        .last()
+        .and_then(|d| read_json(&d.join("manifest.json")).ok())
+        .and_then(|m| {
+            m.get("created_at")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        });
     json!({"ok": true, "count": dirs.len(), "latest": latest,
-           "path": root.display().to_string()})
+           "latest_at": latest_at, "path": root.display().to_string()})
+}
+
+/// 恢复最近一份本地备份：先把当前账号库复制到临时目录，再做一份安全备份，
+/// 然后用备份替换 profiles。失败时回滚到原目录。
+#[tauri::command(async)]
+pub(crate) fn restore_latest_backup() -> Value {
+    let _guard = BACKUP_LOCK.lock().unwrap();
+    let root = backup_root();
+    let Some(target) = backup_dirs(&root).pop() else {
+        return json!({"ok": false, "error": "没有可恢复的备份"});
+    };
+    let src = target.join("profiles");
+    if !src.is_dir() {
+        return json!({"ok": false, "error": "备份缺少 profiles 目录"});
+    }
+    let dest = profiles_dir();
+    let tmp = app_data_dir().join(format!("profiles.restore-tmp-{}", rand::random::<u32>()));
+    if let Err(e) = copy_dir_all(&src, tmp.clone()) {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return json!({"ok": false, "error": format!("读取备份失败: {}", e)});
+    }
+    // 安全备份当前状态；失败不阻断恢复（临时副本已经就绪）。
+    let _ = create_backup_inner();
+    let old = app_data_dir().join(format!(
+        "profiles.restore-old-{}",
+        chrono::Utc::now().timestamp_millis()
+    ));
+    let had_dest = dest.exists();
+    if had_dest {
+        if let Err(e) = std::fs::rename(&dest, &old) {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return json!({"ok": false, "error": format!("暂存当前账号库失败: {}", e)});
+        }
+    }
+    if let Err(e) = std::fs::rename(&tmp, &dest) {
+        if had_dest {
+            let _ = std::fs::rename(&old, &dest);
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+        return json!({"ok": false, "error": format!("替换账号库失败: {}", e)});
+    }
+    if had_dest {
+        let _ = std::fs::remove_dir_all(&old);
+    }
+    let restored = std::fs::read_dir(&dest)
+        .map(|rd| rd.flatten().filter(|e| e.path().is_dir()).count())
+        .unwrap_or(0);
+    audit_log(
+        "restore_backup",
+        None,
+        json!({"backup": target.file_name().map(|n| n.to_string_lossy().to_string()),
+               "accounts": restored}),
+    );
+    json!({"ok": true, "restored": restored,
+           "backup": target.file_name().map(|n| n.to_string_lossy().to_string())})
 }
 
 #[tauri::command(async)]
@@ -87,6 +150,10 @@ pub(crate) fn prune_backups(root: &Path, keep: usize) -> usize {
 /// 这是本机恢复点，不是跨机迁移包；跨机请继续用手动 .zhb 导出。
 pub(crate) fn create_backup() -> Value {
     let _guard = BACKUP_LOCK.lock().unwrap();
+    create_backup_inner()
+}
+
+fn create_backup_inner() -> Value {
     let src = profiles_dir();
     if !src.exists() {
         return json!({"ok": false, "error": "账号库为空，跳过备份"});

@@ -33,6 +33,7 @@ var I18N = {
     quota_notify: "额度提醒", quota_notify_hint: "即将到期或不足 10% 时通知", auto_backup: "自动备份", auto_backup_hint: "每天备份到本机，保留 7 份", update_notify: "新版本提醒", update_notify_hint: "每 24 小时检查一次",
     backup_now: "立即备份", backup_done: "备份完成：{n} 个账号", backup_fail: "备份失败：{e}", diagnostics: "导出诊断报告", diag_done: "诊断报告已导出", diag_fail: "导出失败：{e}",
     backup_dir: "备份目录", open_backup_dir: "打开备份目录", backup_info: "共 {n} 份备份", backup_info_none: "暂无备份", backup_open_fail: "打开备份目录失败：{e}", backup_open_toast: "已打开备份目录",
+    restore_backup: "恢复最近备份", restore_confirm_title: "恢复最近备份", restore_confirm_body: "将用最近一份本地备份替换当前账号库。恢复前会自动再做一份安全备份；确认继续？", restore_done: "已恢复 {n} 个账号", restore_fail: "恢复失败：{e}", backup_last: "最近 {t}",
     import_preview_btn: "预览", import_confirm: "确认导入", import_preview_hint: "新增 {n} · 重复 {d} · 需重登 {r}", import_preview_fail: "预览失败：{e}", import_none: "没有可导入的账号",
     preview_new: "新增", preview_dup: "重复", preview_relogin: "需重登", preview_invalid: "无效", import_confirm_hint: "确认后将合并导入，重复账号会跳过。",
     history_export: "导出 JSON", history_export_done: "已导出 {n} 条记录", history_export_fail: "导出失败：{e}", update_banner: "新版本 v{v} 可用",
@@ -106,6 +107,7 @@ var I18N = {
     quota_notify: "Quota alerts", quota_notify_hint: "Notify when expiring soon or below 10%", auto_backup: "Auto backup", auto_backup_hint: "Daily local backup, keep 7 copies", update_notify: "Update alerts", update_notify_hint: "Check every 24 hours",
     backup_now: "Back up now", backup_done: "Backup complete: {n} accounts", backup_fail: "Backup failed: {e}", diagnostics: "Export diagnostics", diag_done: "Diagnostics exported", diag_fail: "Export failed: {e}",
     backup_dir: "Backup folder", open_backup_dir: "Open backup folder", backup_info: "{n} backup(s)", backup_info_none: "No backups yet", backup_open_fail: "Failed to open the backup folder: {e}", backup_open_toast: "Opened the backup folder",
+    restore_backup: "Restore latest", restore_confirm_title: "Restore latest backup", restore_confirm_body: "Replace the current account library with the latest local backup? A safety backup is created first.", restore_done: "Restored {n} accounts", restore_fail: "Restore failed: {e}", backup_last: "latest {t}",
     import_preview_btn: "Preview", import_confirm: "Import", import_preview_hint: "{n} new · {d} duplicate · {r} need re-login", import_preview_fail: "Preview failed: {e}", import_none: "Nothing to import",
     preview_new: "New", preview_dup: "Duplicate", preview_relogin: "Re-login", preview_invalid: "Invalid", import_confirm_hint: "Import merges new accounts and skips duplicates.",
     history_export: "Export JSON", history_export_done: "Exported {n} records", history_export_fail: "Export failed: {e}", update_banner: "v{v} is available",
@@ -1478,8 +1480,24 @@ function loadBackupInfo() {
   if (!txt) return;
   api("get_backup_status").then(function(r) {
     if (!r || r.ok === false) { txt.textContent = ""; return; }
-    txt.textContent = r.count ? t("backup_info", {n: r.count}) : t("backup_info_none");
+    var label = r.count ? t("backup_info", {n: r.count}) : t("backup_info_none");
+    if (r.count && r.latest_at) label += " · " + t("backup_last", {t: fmtT2(r.latest_at)});
+    txt.textContent = label;
   }).catch(function() { txt.textContent = ""; });
+}
+function restoreLatestBackup() {
+  api("get_backup_status").then(function(s) {
+    if (!s || !s.count) { pushToast(t("backup_info_none"), "warn"); return; }
+    askConfirm(t("restore_confirm_title"), t("restore_confirm_body"), t("restore_confirm_title")).then(function(ok) {
+      if (!ok) return;
+      api("restore_latest_backup").then(function(r) {
+        if (!r || r.ok === false) { pushToast(t("restore_fail", {e: (r && r.error) || "?"}), "bad"); return; }
+        pushToast(t("restore_done", {n: r.restored || 0}), "ok");
+        loadBackupInfo();
+        refreshAll(false);
+      }).catch(function(e) { pushToast(t("restore_fail", {e: errText(e)}), "bad"); });
+    });
+  }).catch(function(e) { pushToast(t("restore_fail", {e: errText(e)}), "bad"); });
 }
 function openBackupDir(showToast) {
   api("open_backup_dir").then(function(r) {
@@ -1650,6 +1668,7 @@ document.addEventListener("click", function(e) {
     case "cfg-history": showHistory(); break;
     case "cfg-backup": backupNow(); break;
     case "cfg-openbackup": openBackupDir(true); break;
+    case "cfg-restorebackup": restoreLatestBackup(); break;
     case "cfg-diag": exportDiagnostics(); break;
     case "bak-export": doExport(); break;
     case "bak-import": previewImport(); break;
