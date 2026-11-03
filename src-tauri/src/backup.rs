@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use crate::formats::write_json;
+use crate::platform;
 use crate::settings::{load_settings, save_settings};
 use crate::util::{app_data_dir, config_path, copy_dir_all, profiles_dir};
 
@@ -14,6 +15,37 @@ static BACKUP_LOCK: Mutex<()> = Mutex::new(());
 
 fn backup_root() -> PathBuf {
     app_data_dir().join("backups")
+}
+
+/// 备份根目录（不存在时创建），供「打开备份目录」命令使用。
+pub(crate) fn ensure_backup_root() -> PathBuf {
+    let root = backup_root();
+    let _ = std::fs::create_dir_all(&root);
+    root
+}
+
+/// 现有备份数量 + 最近一次时间戳，用于设置页展示。
+pub(crate) fn backup_status() -> Value {
+    let root = backup_root();
+    let dirs = backup_dirs(&root);
+    let latest = dirs
+        .last()
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().to_string());
+    json!({"ok": true, "count": dirs.len(), "latest": latest,
+           "path": root.display().to_string()})
+}
+
+#[tauri::command(async)]
+pub(crate) fn open_backup_dir() -> Value {
+    let root = ensure_backup_root();
+    platform::open_dir_explorer(&root);
+    json!({"ok": true, "path": root.display().to_string()})
+}
+
+#[tauri::command(async)]
+pub(crate) fn get_backup_status() -> Value {
+    backup_status()
 }
 
 /// 是否到期：从未备份过也算到期。

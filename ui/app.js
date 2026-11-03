@@ -32,6 +32,7 @@ var I18N = {
     pin: "置顶", unpin: "取消置顶", tags: "标签", tags_title: "编辑标签", tags_sub: "用逗号分隔；最多 8 个，每个最多 16 字。", tags_ph: "例如：工作, 团队", tags_saved: "标签已保存", tags_fail: "保存标签失败：{e}",
     quota_notify: "额度提醒", quota_notify_hint: "即将到期或不足 10% 时通知", auto_backup: "自动备份", auto_backup_hint: "每天备份到本机，保留 7 份", update_notify: "新版本提醒", update_notify_hint: "每 24 小时检查一次",
     backup_now: "立即备份", backup_done: "备份完成：{n} 个账号", backup_fail: "备份失败：{e}", diagnostics: "导出诊断报告", diag_done: "诊断报告已导出", diag_fail: "导出失败：{e}",
+    backup_dir: "备份目录", open_backup_dir: "打开备份目录", backup_info: "共 {n} 份备份", backup_info_none: "暂无备份", backup_open_fail: "打开备份目录失败：{e}", backup_open_toast: "已打开备份目录",
     import_preview_btn: "预览", import_confirm: "确认导入", import_preview_hint: "新增 {n} · 重复 {d} · 需重登 {r}", import_preview_fail: "预览失败：{e}", import_none: "没有可导入的账号",
     preview_new: "新增", preview_dup: "重复", preview_relogin: "需重登", preview_invalid: "无效", import_confirm_hint: "确认后将合并导入，重复账号会跳过。",
     history_export: "导出 JSON", history_export_done: "已导出 {n} 条记录", history_export_fail: "导出失败：{e}", update_banner: "新版本 v{v} 可用",
@@ -104,6 +105,7 @@ var I18N = {
     pin: "Pin", unpin: "Unpin", tags: "Tags", tags_title: "Edit tags", tags_sub: "Comma-separated; up to 8 tags, 16 chars each.", tags_ph: "e.g. work, team", tags_saved: "Tags saved", tags_fail: "Failed to save tags: {e}",
     quota_notify: "Quota alerts", quota_notify_hint: "Notify when expiring soon or below 10%", auto_backup: "Auto backup", auto_backup_hint: "Daily local backup, keep 7 copies", update_notify: "Update alerts", update_notify_hint: "Check every 24 hours",
     backup_now: "Back up now", backup_done: "Backup complete: {n} accounts", backup_fail: "Backup failed: {e}", diagnostics: "Export diagnostics", diag_done: "Diagnostics exported", diag_fail: "Export failed: {e}",
+    backup_dir: "Backup folder", open_backup_dir: "Open backup folder", backup_info: "{n} backup(s)", backup_info_none: "No backups yet", backup_open_fail: "Failed to open the backup folder: {e}", backup_open_toast: "Opened the backup folder",
     import_preview_btn: "Preview", import_confirm: "Import", import_preview_hint: "{n} new · {d} duplicate · {r} need re-login", import_preview_fail: "Preview failed: {e}", import_none: "Nothing to import",
     preview_new: "New", preview_dup: "Duplicate", preview_relogin: "Re-login", preview_invalid: "Invalid", import_confirm_hint: "Import merges new accounts and skips duplicates.",
     history_export: "Export JSON", history_export_done: "Exported {n} records", history_export_fail: "Export failed: {e}", update_banner: "v{v} is available",
@@ -1462,9 +1464,29 @@ function cfgBrowseExe() {
 }
 function backupNow() {
   api("backup_now").then(function(r) {
-    if (r && r.ok) pushToast(t("backup_done", {n: r.profiles || 0}), "ok");
-    else pushToast(t("backup_fail", {e: (r && r.error) || "?"}), "bad");
+    if (r && r.ok) {
+      pushToast(t("backup_done", {n: r.profiles || 0}), "ok", {
+        label: t("open_backup_dir"),
+        onClick: function() { openBackupDir(false); }
+      });
+      loadBackupInfo();
+    } else pushToast(t("backup_fail", {e: (r && r.error) || "?"}), "bad");
   }).catch(function(e) { pushToast(t("backup_fail", {e: errText(e)}), "bad"); });
+}
+function loadBackupInfo() {
+  var txt = el("backupInfoTxt");
+  if (!txt) return;
+  api("get_backup_status").then(function(r) {
+    if (!r || r.ok === false) { txt.textContent = ""; return; }
+    txt.textContent = r.count ? t("backup_info", {n: r.count}) : t("backup_info_none");
+  }).catch(function() { txt.textContent = ""; });
+}
+function openBackupDir(showToast) {
+  api("open_backup_dir").then(function(r) {
+    if (!r || r.ok === false) { pushToast(t("backup_open_fail", {e: (r && r.error) || "?"}), "bad"); return; }
+    if (showToast) pushToast(t("backup_open_toast"), "ok");
+    loadBackupInfo();
+  }).catch(function(e) { pushToast(t("backup_open_fail", {e: errText(e)}), "bad"); });
 }
 function saveDialog(defaultPath, name, ext) {
   return invoke("plugin:dialog|save", { options: { defaultPath: defaultPath, filters: [{ name: name, extensions: [ext] }] } })
@@ -1492,6 +1514,7 @@ function exportHistory() {
 /* ---------------- settings modal / update / history ---------------- */
 function showCfg() {
   if (S.st) syncForm(true);
+  loadBackupInfo();
   openModal("cfgModal", '[data-action="cfg-checkupdate"]');
   api("get_state").then(function(st) {
     S.st = st; syncForm(true); renderAll();
@@ -1626,6 +1649,7 @@ document.addEventListener("click", function(e) {
     case "cfg-kill": doKill(); break;
     case "cfg-history": showHistory(); break;
     case "cfg-backup": backupNow(); break;
+    case "cfg-openbackup": openBackupDir(true); break;
     case "cfg-diag": exportDiagnostics(); break;
     case "bak-export": doExport(); break;
     case "bak-import": previewImport(); break;
