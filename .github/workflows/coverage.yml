@@ -43,6 +43,10 @@ jobs:
       - name: Generate LCOV report
         run: cargo llvm-cov --manifest-path src-tauri/Cargo.toml --lcov --output-path lcov.info
 
+      # 防退化门槛：当前基线见 docs/PERFORMANCE.md；刻意下调需在同一 PR 说明
+      - name: Enforce coverage floor
+        run: python3 scripts/coverage-gate.py lcov.info
+
       - name: Upload coverage report
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

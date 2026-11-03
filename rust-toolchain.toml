@@ -1,4 +1,5 @@
 [toolchain]
 channel = "1.97.1"
-components = ["clippy", "rustfmt", "llvm-tools-preview"]
+# llvm-tools-preview 只在 Coverage workflow 里安装，放全局会让每台开发机多下载一份 LLVM
+components = ["clippy", "rustfmt"]
 profile = "minimal"

@@ -29,7 +29,7 @@ Switches only the login identity — projects, sessions and settings stay untouc
 - **UX** — light / dark theme, custom titlebar, window geometry memory, autostart, close-to-tray, start minimized, rename & manual reorder, undo delete, claim history, 2/3-column wide layout, bilingual UI (zh/en)
 - **Account organization** — search, current/has-benefits/expired filters, custom tags, pinning; tray quick-switch submenu and `Ctrl+Shift+Z` global toggle
 - **Alerts & recovery** — quota expiry / below-10% notifications, periodic update alerts, daily local auto-backup (7 copies) plus portable `.zhb`, import preview (new/duplicate/needs re-login)
-- **Maintainability** — single-instance guard, redacted diagnostics export, claim-history JSON export, Playwright functional E2E with failure screenshots, cargo-deny supply-chain gate
+- **Maintainability** — single-instance guard, redacted diagnostics export and crash log (`crash.log`), claim-history JSON export, Playwright functional E2E (claim state machine + axe accessibility scan, failure screenshots), cargo-deny supply-chain gate
 
 ## Install
 
@@ -47,7 +47,7 @@ Grab `ZCode Hub_x.x.x_x64-setup.exe` from [Releases](../../releases). Windows 10
 | To tray | Titlebar ✕ follows the close behavior setting (tray or quit); real exit = tray icon → Quit |
 | Find an account | Search box + filter chips; pin from the card, edit tags from the tag button |
 | Switch without opening | Tray → Quick switch, or `Ctrl+Shift+Z` to toggle the window |
-| Recover / migrate | Settings → "Back up now" for a local restore point; "Restore latest" rolls back (a safety backup is created first); use `.zhb` for cross-machine migration |
+| Recover / migrate | Settings → "Back up now" for a local restore point; "Restore backup" lists every backup (time / account count / integrity) and rolls back the one you pick — truncated backups are refused, a safety backup is created first; use `.zhb` for cross-machine migration |
 
 ## Security model
 

@@ -26,5 +26,6 @@ updates:
     ignore:
       # Workflow actions are pinned by commit SHA and upgraded deliberately
       # after a manual review; do not auto-open major-version PRs.
+      # Review cadence: once per quarter — see CONTRIBUTING.md 「依赖升级节奏」.
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]

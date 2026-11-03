@@ -112,6 +112,12 @@ jobs:
           }
           $json | ConvertTo-Json -Depth 5 | Set-Content "src-tauri/target/release/bundle/nsis/latest.json" -Encoding utf8
 
+      # Release 说明取自 CHANGELOG 的对应版本段落（可审阅），不用 commit 标题现凑
+      - name: Extract release notes from CHANGELOG
+        shell: bash
+        run: bash scripts/release-notes.sh > release-notes.md
+
+      # 供应链可验证：安装包 / latest.json / SBOM 的 SHA-256 随 Release 一起发布
       - name: Generate SBOM (SPDX JSON)
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
@@ -121,6 +127,22 @@ jobs:
           upload-artifact: false
           upload-release-assets: false
 
+      # 必须排在 SBOM 之后：否则 .spdx.json 还没生成，校验和会漏掉它
+      - name: Write SHA-256 checksums
+        shell: pwsh
+        run: |
+          $dir = "src-tauri/target/release/bundle/nsis"
+          $files = Get-ChildItem $dir -File | Where-Object {
+            $_.Name -like "*x64-setup.exe" -or $_.Name -eq "latest.json" -or $_.Name -like "*.spdx.json"
+          } | Sort-Object Name
+          if (-not $files) { throw "no release artifacts found in $dir" }
+          $lines = foreach ($f in $files) {
+            $hash = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower()
+            "$hash  $($f.Name)"
+          }
+          # 统一换行，避免 git/编辑器差异影响校验工具
+          ($lines -join "`n") + "`n" | Set-Content "$dir/SHA256SUMS.txt" -Encoding ascii -NoNewline
+
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -129,15 +151,17 @@ jobs:
             src-tauri/target/release/bundle/nsis/*.exe
             src-tauri/target/release/bundle/nsis/*.sig
             src-tauri/target/release/bundle/nsis/latest.json
+            src-tauri/target/release/bundle/nsis/SHA256SUMS.txt
             src-tauri/target/release/bundle/nsis/zcode-hub-sbom.spdx.json
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
+          body_path: release-notes.md
           files: |
             src-tauri/target/release/bundle/nsis/*.exe
             src-tauri/target/release/bundle/nsis/*.sig
             src-tauri/target/release/bundle/nsis/latest.json
+            src-tauri/target/release/bundle/nsis/SHA256SUMS.txt
             src-tauri/target/release/bundle/nsis/zcode-hub-sbom.spdx.json
-          generate_release_notes: true
