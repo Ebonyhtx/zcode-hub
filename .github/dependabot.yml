@@ -4,6 +4,11 @@ updates:
     directory: "/src-tauri"
     schedule:
       interval: "weekly"
+    ignore:
+      # Windows-only product: glib is pulled only by the Linux GTK stack
+      # (tauri -> gtk 0.18 -> glib 0.18). The fix needs glib 0.20 / gtk 0.20,
+      # which Tauri 2 does not use yet. See SECURITY.md for the exception.
+      - dependency-name: "glib"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

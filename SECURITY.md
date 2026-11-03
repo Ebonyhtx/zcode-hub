@@ -21,6 +21,15 @@
 - 客户端运行时读取的 `~\.zcode\v2\credentials.json` 使用 ZCode 官方自身的凭据保护方案（可推导 fallback），其安全强度由 ZCode 官方决定，本工具不放大也不缩小该暴露面。
 - 本工具不包含任何自建遥测或远端存储；福利检测会以用户本人账号向 ZCode 官方接口上报 `app_launch` / `app_daily_active` 启动事件（每账号 30 分钟节流，用于解锁可领套餐），可在设置中关闭自动检测。所有网络请求仅发往 `zcode.z.ai` / `chat.z.ai` / `api.z.ai` / `bigmodel.cn` 官方域。
 
+### 依赖安全例外
+
+- **GHSA-wrw7-89jp-8q8g（`glib` < 0.20 的 `VariantStrIter` 实现缺陷，severity: moderate）**
+  `glib` 只通过 Linux GTK 栈传递引入：`tauri → gtk 0.18 → glib 0.18`。本项目只发布 Windows x64 安装包，
+  Windows 构建不编译、不链接 `glib`；Linux 仅用于 CI 的编译与纯逻辑单测，不产出可分发的 Linux 二进制。
+  上游修复需要 `glib 0.20`（对应 `gtk 0.20`），Tauri 2 目前仍使用 gtk 0.18，无法在不破坏 API 的情况下升级。
+  因此该警报按“vulnerable code not in execute path”归档，并在 Dependabot 中显式忽略 `glib`。
+  **移除条件：Tauri/GTK 升级到 0.20 后，删除此例外与 Dependabot ignore。**
+
 ## 泄露应对
 
 若怀疑账号凭据泄露：立即在 ZCode 客户端退出登录并重新登录（使旧令牌失效），随后在 Hub 中删除对应存档并重新保存。
