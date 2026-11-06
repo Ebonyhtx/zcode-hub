@@ -180,6 +180,38 @@ test("failed claim surfaces the error and re-enables the button", async ({ page 
   await expect(page.locator('[data-action="claim"][data-plan="p1"]')).toHaveText("去领取");
 });
 
+test("already_claimed removes the campaign and shows the claimed toast", async ({ page }) => {
+  await scriptClaimStates(page, [
+    { status: "claiming", planId: "p1", planName: "Weekend bonus" },
+    { status: "already_claimed", planId: "p1", planName: "Weekend bonus" }
+  ]);
+  await page.locator('[data-action="claim"][data-plan="p1"]').first().click();
+  await expect(page.locator(".toasts")).toContainText("今日已领取");
+  // 权益已生效：活动从卡片移除，按钮消失（与 success 同路径）
+  await expect(page.locator('.acct[data-key="alpha"] .camp')).toHaveCount(0);
+});
+
+test("not_eligible ends with a warning and the claim button stays", async ({ page }) => {
+  await scriptClaimStates(page, [
+    { status: "claiming", planId: "p1", planName: "Weekend bonus" },
+    { status: "not_eligible", planId: "p1", planName: "Weekend bonus" }
+  ]);
+  await page.locator('[data-action="claim"][data-plan="p1"]').first().click();
+  await expect(page.locator(".toasts")).toContainText("未开放");
+  await expect(page.locator('[data-action="claim"][data-plan="p1"]')).toBeEnabled();
+});
+
+test("rate-limited failure surfaces the recovery time from holdUntil", async ({ page }) => {
+  await scriptClaimStates(page, [
+    { status: "claiming", planId: "p1", planName: "Weekend bonus" },
+    { status: "failed", planId: "p1", holdUntil: 1900000000, message: "限流中" }
+  ]);
+  await page.locator('[data-action="claim"][data-plan="p1"]').first().click();
+  // holdUntil 走专门的文案（含恢复时刻），不走 localizeErr 的通用失败分支
+  await expect(page.locator(".toasts")).toContainText("限流中，");
+  await expect(page.locator(".toasts")).not.toContainText("领取失败");
+});
+
 test("claim history modal opens and renders rows", async ({ page }) => {
   await page.locator('[data-action="cfg"]').click();
   await page.locator('[data-action="cfg-history"]').click();

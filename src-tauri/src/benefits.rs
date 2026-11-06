@@ -115,10 +115,27 @@ pub(crate) fn benefits_key_result(key: &str) -> Value {
     let api = claim::ClaimApi::default();
     let marketing = claim::marketing_claim_plans(http(), &api, &token, &mid, &ver);
     let preview = claim::preview_plans(http(), &api, &token, &mid, &ver);
+    // marketing/preview 任一 429（含 Retry-After）→ 记录账号级 hold：
+    // 下一轮检测在期满前零请求跳过该账号（两个源同时限流时取较大的 Retry-After，只记一次）
+    let detect_rate_wait = marketing
+        .as_ref()
+        .err()
+        .and_then(|e| e.rate_wait_ms)
+        .into_iter()
+        .chain(preview.as_ref().err().and_then(|e| e.rate_wait_ms))
+        .max();
+    if let Some(ra) = detect_rate_wait {
+        record_rate_hold(key, ra, "检测被限流");
+    }
     match (&marketing, &preview) {
-        (Err(me), Err(pe)) => json!({"ok": false, "transient": pe.transient,
+        (Err(me), Err(pe)) => json!({"ok": false, "transient": me.transient || pe.transient,
             "error": format!("{} / {}", me, pe.msg), "count": 0, "campaigns": [], "checked_at": ts}),
         _ => {
+            // 两个数据源都真实读通 → 解除该账号的限流 hold
+            //（任一源仍被限流时，维持刚记录的 hold，不能被另一个源的成功冲掉）
+            if marketing.is_ok() && preview.is_ok() {
+                rate_hold_clear(key);
+            }
             let plans: Vec<Value> = match (&marketing, &preview) {
                 (Ok(m), Ok(p)) => merge_plan_sources(m, p),
                 (Ok(m), Err(_)) => m.clone(),
@@ -180,7 +197,12 @@ pub(crate) fn load_benefits_once() {
                     }
                 });
                 if let Some(raw) = raw {
-                    loaded.insert(raw, val.clone());
+                    let mut val = val.clone();
+                    // hold 仅存内存：重启后旧标记已无意义，剥掉避免显示过期的「限流等待中」
+                    if val.get("held").and_then(|v| v.as_bool()).unwrap_or(false) {
+                        val["held"] = json!(false);
+                    }
+                    loaded.insert(raw, val);
                 }
             }
             *g = Some(loaded);
@@ -193,6 +215,21 @@ pub(crate) fn load_benefits_once() {
 
 /// 单账号检测：只更新内存与托盘，不立刻写盘（批量调用方统一持久化一次）。
 pub(crate) fn run_benefit_check_for(key: &str) -> Value {
+    // 入口纪律：限流 hold 期内零请求，直接复答（与 magpie 插件 toClaim 复答同策略）
+    let now = chrono::Utc::now().timestamp();
+    if let Some((until, msg)) = rate_hold_check(key, now) {
+        let held = json!({"ok": false, "held": true, "transient": true, "error": msg,
+                          "until": until, "count": 0, "campaigns": [], "checked_at": now});
+        // 复答也要进 BENEFITS：卡片 UI 读的是 get_state 里的福利表，
+        // 不写入的话「限流等待中，HH:MM 恢复」永远不会显示
+        BENEFITS
+            .lock()
+            .unwrap()
+            .get_or_insert_with(std::collections::HashMap::new)
+            .insert(key.to_string(), held.clone());
+        update_tray_tooltip();
+        return held;
+    }
     let result = benefits_key_result(key);
     BENEFITS
         .lock()
@@ -222,6 +259,7 @@ pub(crate) struct BatchStat {
     pub(crate) failed: u64,
     pub(crate) transient: u64,
     pub(crate) with: u64,
+    pub(crate) held: u64, // 限流 hold 中被跳过（零请求）的账号，不计入失败
     pub(crate) total: u64,
 }
 
@@ -233,6 +271,7 @@ pub(crate) fn check_benefits_many(keys: &[String]) -> BatchStat {
         failed: 0,
         transient: 0,
         with: 0,
+        held: 0,
         total: 0,
     };
     *CHECK_STATE.lock().unwrap() = Some((0, keys.len() as u64));
@@ -241,7 +280,11 @@ pub(crate) fn check_benefits_many(keys: &[String]) -> BatchStat {
             std::thread::sleep(std::time::Duration::from_millis(BENEFIT_BATCH_GAP_MS));
         }
         let r = run_benefit_check_for(k);
-        if r.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if r.get("held").and_then(|v| v.as_bool()).unwrap_or(false) {
+            // hold 中的账号：零请求跳过，也不计入「失败」——避免全部失败触发全局立即重试，
+            // 把其他健康账号也拖进高频检测
+            st.held += 1;
+        } else if r.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
             st.okn += 1;
             let c = r.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
             if c > 0 {
@@ -276,6 +319,8 @@ pub(crate) fn check_benefits(key: String) -> serde_json::Value {
            "campaigns": r.get("campaigns").cloned().unwrap_or(json!([])),
            "checked_at": r.get("checked_at").cloned().unwrap_or(Value::Null),
            "transient": r.get("transient").and_then(|v| v.as_bool()).unwrap_or(false),
+           "held": r.get("held").cloned().unwrap_or(Value::Null),
+           "until": r.get("until").cloned().unwrap_or(Value::Null),
            "error": r.get("error").cloned().unwrap_or(Value::Null), "key": key})
 }
 
@@ -283,12 +328,14 @@ pub(crate) fn check_benefits(key: String) -> serde_json::Value {
 pub(crate) fn check_all_benefits() -> serde_json::Value {
     let keys = all_profile_keys();
     let st = check_benefits_many(&keys);
-    // 全部失败不推进 last_check：下一轮自动检测应立即重试，而不是等一个完整周期
-    if st.okn > 0 {
+    // 全部真实失败不推进 last_check：下一轮自动检测应立即重试，而不是等一个完整周期。
+    // hold 中的账号不算失败：全员 hold 时按正常周期走（期满自动恢复，无需立即空转）。
+    if st.okn > 0 || (st.held > 0 && st.failed == 0) {
         *LAST_CHECK.lock().unwrap() = Some(chrono::Utc::now().timestamp());
     }
     json!({"ok": true, "accounts": keys.len(), "checked_ok": st.okn, "failed": st.failed,
-           "transient": st.transient, "accounts_with_benefits": st.with, "total_campaigns": st.total})
+           "transient": st.transient, "held": st.held,
+           "accounts_with_benefits": st.with, "total_campaigns": st.total})
 }
 
 pub(crate) static CLAIM_STATE: Mutex<Option<Value>> = Mutex::new(None);
@@ -314,6 +361,151 @@ pub(crate) fn claim_busy() -> bool {
     )
 }
 
+// ---------------- 账号级限流 hold（照 magpie 社区插件 rateWait 设计） ----------------
+//
+// 背景：magpie 插件真实事故（plugins#503）——一个账号 4 天被限流 180 次，根因是持续重试
+// 本身会把限流一直续着。修复：429 后在等待期内对该账号**零请求**直接复答上次的失败结果。
+//
+// 入口纪律：claim_plan 与 run_benefit_check_for 发任何请求前先查 hold。
+// 解除时机只有两种：等待期满自然过期；或一次真实请求成功读通后清除。
+// 仅存内存（与 magpie 插件一致），重启失忆可接受；账号 key 天然区分账号，无需补充标识。
+
+pub(crate) const RECHECK_MS: u64 = 30 * 60 * 1000; // 首次限流等待 30 分钟
+pub(crate) const RATE_LIMIT_MAX_MS: u64 = 6 * 60 * 60 * 1000; // 封顶 6 小时
+
+#[derive(Debug, Clone)]
+pub(crate) struct RateHold {
+    pub(crate) wait_ms: u64, // 本次等待时长（再犯时按此翻倍）
+    pub(crate) until: i64,   // unix 秒
+    pub(crate) message: String,
+}
+
+pub(crate) static RATE_WAIT: Mutex<Option<std::collections::HashMap<String, RateHold>>> =
+    Mutex::new(None);
+
+/// 下一次等待时长（纯函数）：优先服务端 Retry-After；否则 30 分钟起步、逐次翻倍，封顶 6h。
+pub(crate) fn next_rate_wait_ms(prev_wait_ms: u64, retry_after_ms: u64) -> u64 {
+    let raw = if retry_after_ms > 0 {
+        retry_after_ms
+    } else {
+        RECHECK_MS.max(prev_wait_ms.saturating_mul(2))
+    };
+    raw.min(RATE_LIMIT_MAX_MS)
+}
+
+/// hold 期内返回 Some((until, message))；过期视为无 hold（条目保留用于再犯时翻倍）。
+pub(crate) fn rate_hold_check(key: &str, now: i64) -> Option<(i64, String)> {
+    let g = RATE_WAIT.lock().unwrap();
+    let h = g.as_ref()?.get(key)?;
+    if now < h.until {
+        Some((h.until, h.message.clone()))
+    } else {
+        None
+    }
+}
+
+/// 上次等待时长（用于再犯时指数翻倍）；无记录为 0。
+pub(crate) fn rate_hold_prev_ms(key: &str) -> u64 {
+    let g = RATE_WAIT.lock().unwrap();
+    g.as_ref()
+        .and_then(|m| m.get(key))
+        .map(|h| h.wait_ms)
+        .unwrap_or(0)
+}
+
+pub(crate) fn rate_hold_set(key: &str, wait_ms: u64, now: i64, message: String) {
+    let mut g = RATE_WAIT.lock().unwrap();
+    g.get_or_insert_with(Default::default).insert(
+        key.to_string(),
+        RateHold {
+            wait_ms,
+            until: now + (wait_ms / 1000) as i64,
+            message,
+        },
+    );
+}
+
+pub(crate) fn rate_hold_clear(key: &str) {
+    let mut g = RATE_WAIT.lock().unwrap();
+    if let Some(map) = g.as_mut() {
+        map.remove(key);
+    }
+}
+
+/// 检测/领取被限流后统一记录 hold：Retry-After 优先，否则指数退避。
+fn record_rate_hold(key: &str, retry_after_ms: u64, reason: &str) {
+    let now = chrono::Utc::now().timestamp();
+    let wait = next_rate_wait_ms(rate_hold_prev_ms(key), retry_after_ms);
+    let until = now + (wait / 1000) as i64;
+    let message = format!("{}，{} 前不再请求该账号", reason, fmt_hhmm(until));
+    rate_hold_set(key, wait, now, message);
+}
+
+/// Unix 秒 → 本地 HH:MM（限流恢复时间展示用）
+fn fmt_hhmm(unix: i64) -> String {
+    use chrono::TimeZone;
+    chrono::Local
+        .timestamp_opt(unix, 0)
+        .single()
+        .map(|t| t.format("%H:%M").to_string())
+        .unwrap_or_else(|| "--:--".into())
+}
+
+/// ClaimErr → 领取终态决策（纯函数，便于单测）：
+/// 返回 (CLAIM_STATE.status, 用户文案, 可选 hold 参数 (wait_ms, until, message))。
+fn claim_error_outcome(
+    e: &claim::ClaimErr,
+    prev_wait_ms: u64,
+    now: i64,
+) -> (String, String, Option<(u64, i64, String)>) {
+    use claim::ClaimErrKind::*;
+    match e.kind {
+        AlreadyClaimed => ("already_claimed".into(), "该福利今日已领取".into(), None),
+        NotEligible => (
+            "not_eligible".into(),
+            "活动此刻未开放，稍后自动复查".into(),
+            None,
+        ),
+        RateLimited => {
+            let wait = next_rate_wait_ms(prev_wait_ms, e.rate_wait_ms.unwrap_or(0));
+            let until = now + (wait / 1000) as i64;
+            let message = format!("限流中：{} 前不再请求该账号", fmt_hhmm(until));
+            let hold_msg = format!("领取被限流（{}），{} 前不再请求", e.msg, fmt_hhmm(until));
+            ("failed".into(), message, Some((wait, until, hold_msg)))
+        }
+        Captcha => ("failed".into(), e.msg.clone(), None),
+        Transient => (
+            "failed".into(),
+            format!("暂时不可用：{}，稍后自动重试", e.msg),
+            None,
+        ),
+        Fatal => ("failed".into(), format!("领取失败：{}", e.msg), None),
+    }
+}
+
+/// 按 ClaimErr.kind 落领取终态。已领/未开放是独立状态；限流进入账号级 hold。
+fn settle_claim_error(key: &str, plan_id: &str, plan_name: &str, e: &claim::ClaimErr) {
+    let now = chrono::Utc::now().timestamp();
+    let (status, message, hold) = claim_error_outcome(e, rate_hold_prev_ms(key), now);
+    if let Some((wait_ms, _until, hold_msg)) = &hold {
+        rate_hold_set(key, *wait_ms, now, hold_msg.clone());
+    }
+    let mut st = json!({"status": status, "message": message, "key": key,
+        "planName": plan_name, "planId": plan_id, "updatedAt": now});
+    if let Some((_, until, _)) = &hold {
+        st["holdUntil"] = json!(until); // UI 直接展示恢复时刻，避免本地化时丢时间
+    }
+    // 「今日已领」说明权益已生效（只是不是本次操作领的）：同样移除活动 + 失效额度缓存，
+    // 但不写审计（不是本机执行的领取）
+    if e.kind == claim::ClaimErrKind::AlreadyClaimed {
+        QUOTA_CACHE.lock().unwrap().as_mut().map(|m| m.remove(key));
+        persist_quota_cache();
+        optimistically_consume_benefit(key, plan_id);
+        rate_hold_clear(key); // 服务端正常应答 = 已读通
+    }
+    set_claim_state(st);
+}
+
 #[tauri::command]
 pub(crate) fn claim_plan(key: String, plan_id: String, plan_name: Option<String>) -> Value {
     if let Err(e) = safe_key(&key) {
@@ -324,6 +516,12 @@ pub(crate) fn claim_plan(key: String, plan_id: String, plan_name: Option<String>
     }
     if claim_busy() {
         return json!({"ok": false, "code": "claim_busy", "error": "上一次领取仍在进行中，请稍候"});
+    }
+    // 入口纪律：限流 hold 期内零请求直接拒绝（必须在任何网络路径之前）
+    let now = chrono::Utc::now().timestamp();
+    if let Some((until, _)) = rate_hold_check(&key, now) {
+        return json!({"ok": false, "code": "rate_limited_hold", "until": until,
+                      "error": format!("账号限流等待中，{} 前不再请求", fmt_hhmm(until))});
     }
     let pname = plan_name.unwrap_or_default();
     set_claim_state(
@@ -382,58 +580,14 @@ pub(crate) fn claim_worker(key: String, plan_id: String, plan_name: String) {
     if let Some(creds) = cred_for_key(&key) {
         maybe_report_events(&key, &creds, &mid, &ver);
     }
-    // 验证码（若服务端要求）：本地回环页 + 系统浏览器，用户手动完成
     let api = claim::ClaimApi::default();
-    let cfg = claim::fetch_captcha_config(http(), &api, &ver).unwrap_or(json!({"enabled": false}));
-    let enabled = cfg
-        .get("enabled")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let mut param: Option<String> = None;
-    let mut region: Option<String> = None;
-    if enabled {
-        match claim::start_captcha_flow(&cfg) {
-            Ok(flow) => {
-                let captcha_url = flow.url.clone();
-                set_claim_state(
-                    json!({"status":"waiting_captcha","key": key, "planName": plan_name,
-                    "planId": plan_id, "captchaUrl": captcha_url,
-                    "updatedAt": chrono::Utc::now().timestamp()}),
-                );
-                platform::open_in_browser(&flow.url);
-                match claim::wait_captcha(flow) {
-                    Ok(v) => {
-                        param = v.get("param").and_then(|p| p.as_str()).map(String::from);
-                        region = v.get("region").and_then(|r| r.as_str()).map(String::from);
-                        if param
-                            .as_deref()
-                            .map(|p| p.trim().is_empty())
-                            .unwrap_or(true)
-                        {
-                            return fail("未取得验证码结果".into());
-                        }
-                    }
-                    Err(e) => return fail(e),
-                }
-            }
-            Err(e) => return fail(e),
-        }
-    }
     set_claim_state(
         json!({"status":"claiming","key": key, "planName": plan_name, "planId": plan_id,
                            "updatedAt": chrono::Utc::now().timestamp()}),
     );
-    match claim::submit_claim(
-        http(),
-        &api,
-        &token,
-        &mid,
-        &ver,
-        &plan_id,
-        param.as_deref(),
-        region.as_deref(),
-    ) {
+    match run_claim_flow(&key, &plan_id, &plan_name, &token, &mid, &ver, &api) {
         Ok(data) => {
+            rate_hold_clear(&key); // 真实请求成功读通 → 解除账号级限流 hold
             let (eff, _s, ends) = claim::claim_timing(&data);
             let name = data
                 .pointer("/plan/name")
@@ -463,8 +617,94 @@ pub(crate) fn claim_worker(key: String, plan_id: String, plan_name: String) {
                 persist_benefits();
             });
         }
-        Err(e) => fail(e),
+        Err(e) => settle_claim_error(&key, &plan_id, &plan_name, &e),
     }
+}
+
+/// 领取主流程：先裸领取（大多数活动无需验证码，零弹窗直接成功）；
+/// 仅当服务端按需索要验证码（kind == Captcha）时才取配置、起本地回环页并弹浏览器，
+/// 用户手动完成后带验证参数重领一次。重领的错误（含 429 → hold）原样向上传递。
+#[allow(clippy::too_many_arguments)] // 与 claim 请求字段一一对应
+fn run_claim_flow(
+    key: &str,
+    plan_id: &str,
+    plan_name: &str,
+    token: &str,
+    mid: &str,
+    ver: &str,
+    api: &claim::ClaimApi,
+) -> Result<Value, claim::ClaimErr> {
+    match claim::submit_claim(http(), api, token, mid, ver, plan_id, None, None) {
+        Ok(data) => Ok(data),
+        Err(e) if e.kind == claim::ClaimErrKind::Captcha => {
+            // 本次领取被要求验证码：取验证码配置（sceneId 等），起回环页 + 系统浏览器
+            let cfg =
+                claim::fetch_captcha_config(http(), api, ver).map_err(|ce| claim::ClaimErr {
+                    msg: format!("需要完成验证码，但验证码配置获取失败: {}", ce),
+                    code: None,
+                    kind: claim::ClaimErrKind::Captcha,
+                    rate_wait_ms: None,
+                })?;
+            run_captcha_and_claim(key, plan_id, plan_name, token, mid, ver, api, &cfg)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Captcha 分支：等用户完成验证码，再带验证参数重领一次。
+#[allow(clippy::too_many_arguments)] // 与 claim 请求字段一一对应
+fn run_captcha_and_claim(
+    key: &str,
+    plan_id: &str,
+    plan_name: &str,
+    token: &str,
+    mid: &str,
+    ver: &str,
+    api: &claim::ClaimApi,
+    cfg: &Value,
+) -> Result<Value, claim::ClaimErr> {
+    let captcha_err = |msg: String| claim::ClaimErr {
+        msg,
+        code: None,
+        kind: claim::ClaimErrKind::Captcha,
+        rate_wait_ms: None,
+    };
+    let flow = claim::start_captcha_flow(cfg).map_err(captcha_err)?;
+    let captcha_url = flow.url.clone();
+    set_claim_state(
+        json!({"status":"waiting_captcha","key": key, "planName": plan_name,
+        "planId": plan_id, "captchaUrl": captcha_url,
+        "updatedAt": chrono::Utc::now().timestamp()}),
+    );
+    platform::open_in_browser(&flow.url);
+    let v = claim::wait_captcha(flow).map_err(captcha_err)?;
+    let param = v
+        .get("param")
+        .and_then(|p| p.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let Some(param) = param else {
+        return Err(captcha_err("未取得验证码结果".into()));
+    };
+    let region = v
+        .get("region")
+        .and_then(|r| r.as_str())
+        .map(|s| s.trim().to_string());
+    // 重领：back to claiming；每次提交都生成新的 x-request-id（submit_claim 内部）
+    set_claim_state(
+        json!({"status":"claiming","key": key, "planName": plan_name, "planId": plan_id,
+                           "updatedAt": chrono::Utc::now().timestamp()}),
+    );
+    claim::submit_claim(
+        http(),
+        api,
+        token,
+        mid,
+        ver,
+        plan_id,
+        Some(&param),
+        region.as_deref(),
+    )
 }
 
 /// 重新打开当前领取流程的验证页（用户关闭浏览器后不必重新走整个领取）
@@ -602,5 +842,148 @@ mod tests {
         assert_eq!(items[1]["plan"], json!("A"));
         assert_eq!(claim_items_from_text(txt, 1).len(), 1);
         assert!(claim_items_from_text("not json", 10).is_empty());
+    }
+
+    #[test]
+    fn next_rate_wait_doubles_caps_and_prefers_retry_after() {
+        // 首次限流：30 分钟起步
+        assert_eq!(next_rate_wait_ms(0, 0), RECHECK_MS);
+        // 无 Retry-After：逐次翻倍
+        assert_eq!(next_rate_wait_ms(RECHECK_MS, 0), RECHECK_MS * 2);
+        assert_eq!(next_rate_wait_ms(RECHECK_MS * 2, 0), RECHECK_MS * 4);
+        // 封顶 6 小时（含溢出安全的极大值）
+        assert_eq!(next_rate_wait_ms(RATE_LIMIT_MAX_MS, 0), RATE_LIMIT_MAX_MS);
+        assert_eq!(next_rate_wait_ms(u64::MAX / 2, 0), RATE_LIMIT_MAX_MS);
+        // Retry-After 优先
+        assert_eq!(next_rate_wait_ms(0, 90_000), 90_000);
+        assert_eq!(next_rate_wait_ms(RECHECK_MS * 4, 45_000), 45_000);
+        // Retry-After 超过封顶也要封顶
+        assert_eq!(
+            next_rate_wait_ms(0, 100 * 60 * 60 * 1000),
+            RATE_LIMIT_MAX_MS
+        );
+        // Retry-After 为 0 视同缺失
+        assert_eq!(next_rate_wait_ms(RECHECK_MS, 0), RECHECK_MS * 2);
+    }
+
+    #[test]
+    fn rate_hold_blocks_until_expiry_and_survives_for_escalation() {
+        const K: &str = "unit-test-hold-key";
+        rate_hold_clear(K);
+        assert!(rate_hold_check(K, 1_000).is_none());
+        assert_eq!(rate_hold_prev_ms(K), 0);
+        rate_hold_set(K, 60_000, 1_000, "等待中".into());
+        // 等待期内命中：零请求语义由调用方在 check 之后立即 return 保证
+        let (until, msg) = rate_hold_check(K, 1_059).expect("held within window");
+        assert_eq!(until, 1_000 + 60);
+        assert_eq!(msg, "等待中");
+        // 期满自然解除（无需手动清除入口）
+        assert!(rate_hold_check(K, 1_000 + 60).is_none());
+        // 条目保留：再犯时按上次等待翻倍
+        assert_eq!(rate_hold_prev_ms(K), 60_000);
+        rate_hold_clear(K);
+        assert_eq!(rate_hold_prev_ms(K), 0);
+        assert!(rate_hold_check(K, 1_060).is_none());
+    }
+
+    #[test]
+    fn claim_plan_entry_rejects_held_account_without_requests() {
+        const K: &str = "hold-entry-gate@example.com";
+        rate_hold_clear(K);
+        rate_hold_set(
+            K,
+            60_000,
+            chrono::Utc::now().timestamp(),
+            "检测被限流".into(),
+        );
+        // 入口纪律：hold 期内 claim_plan 直接拒绝，不进入 preparing、不 spawn 网络线程
+        let r = claim_plan(K.to_string(), "p1".into(), None);
+        assert_eq!(r["ok"], json!(false));
+        assert_eq!(r["code"], json!("rate_limited_hold"));
+        assert!(r["until"].as_i64().is_some());
+        assert_ne!(claim_state()["status"], json!("preparing"));
+        rate_hold_clear(K);
+    }
+
+    #[test]
+    fn benefit_check_gate_answers_from_memory_without_network() {
+        // run_benefit_check_for 的 hold 闸门必须在任何网络路径之前：
+        // 假 key 若真走到 get_jwt_token 会得到不含 held 的错误结果，此断言即失败
+        const K: &str = "hold-check-gate@example.com";
+        rate_hold_clear(K);
+        rate_hold_set(
+            K,
+            60_000,
+            chrono::Utc::now().timestamp(),
+            "检测被限流，12:34 前不再请求该账号".into(),
+        );
+        let r = run_benefit_check_for(K);
+        assert_eq!(r["held"], json!(true));
+        assert_eq!(r["ok"], json!(false));
+        assert_eq!(r["error"], json!("检测被限流，12:34 前不再请求该账号"));
+        assert!(r["until"].as_i64().is_some());
+        // 复答进 BENEFITS：卡片 UI 才能显示「限流等待中」
+        let entry = BENEFITS
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_default()
+            .get(K)
+            .cloned()
+            .unwrap_or(json!(null));
+        assert_eq!(entry["held"], json!(true));
+        rate_hold_clear(K);
+        BENEFITS.lock().unwrap().as_mut().map(|m| m.remove(K));
+    }
+
+    #[test]
+    fn claim_error_outcome_maps_each_kind_to_terminal_state() {
+        use crate::claim::{ClaimErr, ClaimErrKind};
+        let now = 1_800_000_000_i64;
+        let e = |kind, msg: &str, ra: Option<u64>| ClaimErr {
+            msg: msg.into(),
+            code: None,
+            kind,
+            rate_wait_ms: ra,
+        };
+        // 已领 → 独立状态，不是失败
+        let (st, msg, hold) =
+            claim_error_outcome(&e(ClaimErrKind::AlreadyClaimed, "x", None), 0, now);
+        assert_eq!(st, "already_claimed");
+        assert!(hold.is_none());
+        assert!(msg.contains("已领取"));
+        // 未开放 → 独立状态
+        let (st, msg, hold) = claim_error_outcome(&e(ClaimErrKind::NotEligible, "x", None), 0, now);
+        assert_eq!(st, "not_eligible");
+        assert!(hold.is_none());
+        assert!(msg.contains("未开放"));
+        // 限流 → failed + hold 参数（Retry-After 优先）
+        let (st, _msg, hold) = claim_error_outcome(
+            &e(ClaimErrKind::RateLimited, "too fast", Some(120_000)),
+            0,
+            now,
+        );
+        assert_eq!(st, "failed");
+        let (wait, until, _hm) = hold.expect("rate limited sets hold");
+        assert_eq!(wait, 120_000);
+        assert_eq!(until, now + 120);
+        // 限流无 Retry-After → 30 分钟起步；再犯翻倍
+        let (_, _, hold) =
+            claim_error_outcome(&e(ClaimErrKind::RateLimited, "429", Some(0)), 0, now);
+        assert_eq!(hold.unwrap().0, RECHECK_MS);
+        let (_, _, hold) =
+            claim_error_outcome(&e(ClaimErrKind::RateLimited, "429", None), RECHECK_MS, now);
+        assert_eq!(hold.unwrap().0, RECHECK_MS * 2);
+        // 其余 kind → failed，无 hold
+        for (kind, expect_msg) in [
+            (ClaimErrKind::Captcha, "验证码超时"),
+            (ClaimErrKind::Transient, "网络断开"),
+            (ClaimErrKind::Fatal, "token 无效"),
+        ] {
+            let (st, msg, hold) = claim_error_outcome(&e(kind, expect_msg, None), 0, now);
+            assert_eq!(st, "failed");
+            assert!(hold.is_none());
+            assert!(msg.contains(expect_msg));
+        }
     }
 }

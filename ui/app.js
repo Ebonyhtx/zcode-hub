@@ -42,9 +42,10 @@ var I18N = {
     preview_new: "新增", preview_dup: "重复", preview_relogin: "需重登", preview_invalid: "无效", import_confirm_hint: "确认后将合并导入，重复账号会跳过。",
     history_export: "导出 JSON", history_export_done: "已导出 {n} 条记录", history_export_fail: "导出失败：{e}", update_banner: "新版本 v{v} 可用",
     plan_pending: "{t} 生效", plan_active_syncing: "已生效 · 额度同步中", plan_daily: "/天",
-    not_checked: "未检测", ben_none: "无待领福利", ben_has: "{n} 个待领福利", ben_fail: "检测失败：{e}", ben_transient: "暂时无法检测，稍后自动重试",
+    not_checked: "未检测", ben_none: "无待领福利", ben_has: "{n} 个待领福利", ben_fail: "检测失败：{e}", ben_transient: "暂时无法检测，稍后自动重试", ben_hold: "限流等待中，{time} 恢复",
     claim: "去领取", claim_btn_prep: "准备中", claim_btn_verify: "验证中", claim_btn_claim: "领取中",
     claim_wait: "请在浏览器完成验证码，通过后会自动领取。", claim_ok: "领取成功：{p}（{t} 生效）", claim_fail: "领取失败：{e}", claim_busy: "上一次领取仍在进行中，请稍候。",
+    claim_already: "该福利今日已领取", claim_not_eligible: "活动此刻未开放，稍后自动复查", claim_rate_hold: "账号限流中，{time} 前不再请求，稍后自动恢复",
     claim_timeout: "等待验证超时，请重试。", claim_bg: "领取仍在后台进行，完成后会自动刷新。", claim_reopen: "重新打开验证页",
     claim_steps_prep: "准备", claim_steps_verify: "浏览器验证", claim_steps_claim: "领取",
     switch_title: "切换账号", switch_body: "从「{from}」切换到「{to}」。\n{mode}", switch_hot: "热切换：客户端不重启，直接更换登录身份。", switch_cold: "ZCode 将自动关闭并重启。",
@@ -121,9 +122,10 @@ var I18N = {
     preview_new: "New", preview_dup: "Duplicate", preview_relogin: "Re-login", preview_invalid: "Invalid", import_confirm_hint: "Import merges new accounts and skips duplicates.",
     history_export: "Export JSON", history_export_done: "Exported {n} records", history_export_fail: "Export failed: {e}", update_banner: "v{v} is available",
     plan_pending: "starts {t}", plan_active_syncing: "active · syncing quota", plan_daily: "/day",
-    not_checked: "Not checked", ben_none: "Nothing to claim", ben_has: "{n} claimable", ben_fail: "Check failed: {e}", ben_transient: "Check temporarily unavailable — will retry",
+    not_checked: "Not checked", ben_none: "Nothing to claim", ben_has: "{n} claimable", ben_fail: "Check failed: {e}", ben_transient: "Check temporarily unavailable — will retry", ben_hold: "Rate-limited; retry after {time}",
     claim: "Claim", claim_btn_prep: "Preparing", claim_btn_verify: "Verifying", claim_btn_claim: "Claiming",
     claim_wait: "Complete the captcha in your browser — claiming continues automatically.", claim_ok: "Claimed: {p} (starts {t})", claim_fail: "Claim failed: {e}", claim_busy: "A claim is already in progress. Please wait.",
+    claim_already: "Already claimed today", claim_not_eligible: "The campaign isn't open yet — it will be re-checked automatically", claim_rate_hold: "Rate-limited: no requests until {time}; it will recover automatically",
     claim_timeout: "Verification timed out. Please retry.", claim_bg: "Claim is still running in the background; the UI will refresh when it finishes.", claim_reopen: "Reopen verification page",
     claim_steps_prep: "Prepare", claim_steps_verify: "Browser check", claim_steps_claim: "Claim",
     switch_title: "Switch account", switch_body: "Switch from \"{from}\" to \"{to}\".\n{mode}", switch_hot: "Hot switch: the client keeps running and the identity is swapped in place.", switch_cold: "ZCode will close and restart.",
@@ -797,6 +799,8 @@ function benefitHtml(bd, p) {
   if (!bd) return '<span class="bstate quiet">' + esc(t("not_checked")) + '</span>';
   var when = bd.checked_at ? ' <span class="whn num">· ' + fmtClock(bd.checked_at) + '</span>' : "";
   if (bd.ok === false) {
+    // 账号被限流 hold：等待期内零请求，展示恢复时刻
+    if (bd.held) return '<span class="bstate quiet">' + esc(t("ben_hold", {time: fmtClock(bd.until)})) + '</span>';
     if (bd.transient) return '<span class="bstate quiet">' + esc(t("ben_transient")) + when + '</span>';
     return '<div class="inline-error">' + esc(t("ben_fail", {e: localizeErr(bd.error || "?")}))
       + '<button class="linkbtn" data-action="checkone" data-key="' + esc(p.key) + '">' + esc(t("retry")) + '</button></div>';
@@ -1052,7 +1056,10 @@ function doClaim(key, planId, planName) {
   api("claim_plan", { key: key, planId: planId, planName: planName || "" }).then(function(r) {
     if (!r || r.ok === false) {
       S.claim = null; renderAll();
-      pushToast((r && r.error) || t("claim_fail", {e: "?"}), "bad");
+      var rmsg = (r && r.code === "rate_limited_hold" && r.until)
+        ? t("claim_rate_hold", {time: fmtClock(r.until)})
+        : ((r && r.error) || t("claim_fail", {e: "?"}));
+      pushToast(rmsg, "bad");
       return;
     }
     pollClaimState();
@@ -1067,7 +1074,7 @@ function pollClaimState() {
   var started = Date.now();
   var messageShown = false;
   var finished = false;
-  function finish(success, msg) {
+  function finish(success, msg, type) {
     if (finished) return;
     finished = true;
     if (S.claimTimer) { clearInterval(S.claimTimer); S.claimTimer = null; }
@@ -1084,10 +1091,10 @@ function pollClaimState() {
     S.claim = null;
     renderAll();
     if (success) {
-      pushToast(msg, "ok");
+      pushToast(msg, type || "ok");
       refreshAll(false, ck, null);
     } else {
-      pushToast(msg, "bad");
+      pushToast(msg, type || "bad");
     }
   }
   function tick() {
@@ -1098,8 +1105,21 @@ function pollClaimState() {
         finish(true, t("claim_ok", {p: s.planName || "?", t: s.effectiveAt ? fmtT2(s.effectiveAt) : "—"}));
         return;
       }
+      // 服务端说今天已领过：活动从卡片移除，权益已生效，不算失败
+      if (s.status === "already_claimed") {
+        finish(true, t("claim_already"));
+        return;
+      }
+      // 活动未开放：提示等待自动复查
+      if (s.status === "not_eligible") {
+        finish(false, t("claim_not_eligible"), "warn");
+        return;
+      }
       if (s.status === "failed") {
-        finish(false, t("claim_fail", {e: localizeErr(s.message || "?")}));
+        var fmsg = s.holdUntil
+          ? t("claim_rate_hold", {time: fmtClock(s.holdUntil)})
+          : t("claim_fail", {e: localizeErr(s.message || "?")});
+        finish(false, fmsg);
         return;
       }
       S.claim = { status: s.status, planId: s.planId || (S.claim && S.claim.planId), planName: s.planName || (S.claim && S.claim.planName), key: S.claim && S.claim.key, captchaUrl: s.captchaUrl };

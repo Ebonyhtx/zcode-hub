@@ -214,15 +214,32 @@ pub fn marketing_claim_plans_from(j: &Value) -> Result<Vec<Value>, String> {
     Ok(out)
 }
 
-/// GET marketing/touch（账号自己的 token + deviceMid），提取可领活动
+/// marketing/touch 请求错误：与 [`PreviewErr`] 同构——它是福利检测的**主数据源**
+/// （preview 只是兜底），429 必须与 preview 一样进入账号级限流 hold。
+/// `transient` 区分暂时性与业务错误；`rate_wait_ms` 仅限流时有值（Retry-After 换算）。
+#[derive(Debug)]
+pub struct MarketingErr {
+    pub msg: String,
+    pub transient: bool,
+    pub rate_wait_ms: Option<u64>,
+}
+
+impl std::fmt::Display for MarketingErr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.msg)
+    }
+}
+
+/// GET marketing/touch（账号自己的 token + deviceMid），提取可领活动。
+/// 429（HTTP 状态行或 body code 429/3002）时读取 Retry-After 喂给账号级限流 hold。
 pub fn marketing_claim_plans(
     client: &reqwest::blocking::Client,
     api: &ClaimApi,
     token: &str,
     mid: &str,
     app_version: &str,
-) -> Result<Vec<Value>, String> {
-    let j: Value = client
+) -> Result<Vec<Value>, MarketingErr> {
+    let resp = client
         .get(api.url(MARKETING_TOUCH_PATH))
         .query(&[("locale", "zh-CN"), ("seq", "0")])
         .header("Authorization", format!("Bearer {}", token))
@@ -239,18 +256,51 @@ pub fn marketing_claim_plans(
         .header("x-request-id", uuid::Uuid::new_v4().to_string())
         .timeout(Duration::from_secs(20))
         .send()
-        .map_err(|e| e.to_string())?
-        .json()
-        .map_err(|e| e.to_string())?;
-    marketing_claim_plans_from(&j)
+        .map_err(|e| MarketingErr {
+            msg: e.to_string(),
+            transient: true,
+            rate_wait_ms: None,
+        })?;
+    let status = resp.status().as_u16();
+    let is_429 = status == 429;
+    let retry_after_ms = if is_429 {
+        Some(
+            parse_retry_after_ms(
+                resp.headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok()),
+                chrono::Utc::now().timestamp(),
+            )
+            .unwrap_or(0),
+        )
+    } else {
+        None
+    };
+    let j: Value = resp.json().map_err(|e| MarketingErr {
+        msg: e.to_string(),
+        transient: is_429 || (500..=599).contains(&status),
+        rate_wait_ms: retry_after_ms,
+    })?;
+    // body code 兜底：服务端可能用 HTTP 200 + 业务码表达限流
+    let body_rate = matches!(
+        j.get("code").and_then(|c| c.as_i64()),
+        Some(429) | Some(3002)
+    );
+    let rate_limited = is_429 || body_rate;
+    marketing_claim_plans_from(&j).map_err(|msg| MarketingErr {
+        msg,
+        transient: rate_limited || (500..=599).contains(&status),
+        rate_wait_ms: if rate_limited { retry_after_ms } else { None },
+    })
 }
 
 /// preview 请求错误：`transient` 区分「暂时性」（网络/限频/服务端故障，稍后重试）
-/// 与「业务错误」（鉴权等，需要用户处理）。
+/// 与「业务错误」（鉴权等，需要用户处理）。`rate_wait_ms` 仅 429 时有值（Retry-After）。
 #[derive(Debug)]
 pub struct PreviewErr {
     pub msg: String,
     pub transient: bool,
+    pub rate_wait_ms: Option<u64>,
 }
 
 /// preview 响应分类（纯函数）：
@@ -270,6 +320,7 @@ pub fn parse_preview_response(j: &Value) -> Result<Vec<Value>, PreviewErr> {
         return Err(PreviewErr {
             msg: msg.to_string(),
             transient: code == 429 || (500..=599).contains(&code),
+            rate_wait_ms: None,
         });
     }
     Ok(match j.get("data") {
@@ -306,18 +357,38 @@ pub fn preview_plans(
         .header("HTTP-Referer", "https://zcode.z.ai")
         .header("x-request-id", uuid::Uuid::new_v4().to_string())
         .timeout(Duration::from_secs(30));
-    let j: Value = req
-        .send()
-        .map_err(|e| PreviewErr {
-            msg: e.to_string(),
-            transient: true,
-        })?
-        .json()
-        .map_err(|e| PreviewErr {
-            msg: e.to_string(),
-            transient: true,
-        })?;
-    parse_preview_response(&j)
+    let resp = req.send().map_err(|e| PreviewErr {
+        msg: e.to_string(),
+        transient: true,
+        rate_wait_ms: None,
+    })?;
+    // 429 时读 Retry-After 喂给账号级限流 hold（body 分类逻辑不动）
+    let is_429 = resp.status().as_u16() == 429;
+    let retry_after_ms = if is_429 {
+        Some(
+            parse_retry_after_ms(
+                resp.headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok()),
+                chrono::Utc::now().timestamp(),
+            )
+            .unwrap_or(0),
+        )
+    } else {
+        None
+    };
+    let j: Value = resp.json().map_err(|e| PreviewErr {
+        msg: e.to_string(),
+        transient: is_429,
+        rate_wait_ms: retry_after_ms,
+    })?;
+    parse_preview_response(&j).map_err(|mut e| {
+        if is_429 {
+            e.transient = true;
+            e.rate_wait_ms = Some(retry_after_ms.unwrap_or(0));
+        }
+        e
+    })
 }
 
 /// 客户端 captcha 配置（/api/v1/client/configs → data.configs.captcha）
@@ -349,7 +420,96 @@ pub fn fetch_captcha_config(
         .unwrap_or(Value::Null))
 }
 
-/// POST billing/claim；成功返回 data（含 plan.entitlements[].effective_at 等）
+/// 领取错误语义分类（照 magpie 社区插件 claimOne 的语义表，逐码对应真实应答）：
+/// - `AlreadyClaimed`：code 1003，今天已领过（视为成功收尾，UI 显示「已领取」）
+/// - `NotEligible`：code 1004，活动此刻未开放（当天可复查）
+/// - `Captcha`：code 3007 或 msg 含 captcha（不区分大小写兜底）——需要人工验证码
+/// - `RateLimited`：HTTP 429 或 code 3002/429——限流，必须读 Retry-After 并进入账号级 hold
+/// - `Transient`：其他 5xx（可稍后重试）
+/// - `Fatal`：其余（鉴权、参数、body 不可解析——never guess，重试无意义）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaimErrKind {
+    AlreadyClaimed,
+    NotEligible,
+    Captcha,
+    RateLimited,
+    Transient,
+    Fatal,
+}
+
+/// 领取请求错误：保留业务码与语义分类，供调用方按 kind 分流（验证码 / 已领 / 限流 hold / 终止）。
+#[derive(Debug)]
+pub struct ClaimErr {
+    pub msg: String,
+    pub code: Option<i64>, // body 里的业务码；body 不可解析时为 None
+    pub kind: ClaimErrKind,
+    pub rate_wait_ms: Option<u64>, // 仅 RateLimited 有值：Retry-After 换算的毫秒（无头为 Some(0)）
+}
+
+impl std::fmt::Display for ClaimErr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.code {
+            Some(c) => write!(f, "{}（code {}）", self.msg, c),
+            None => write!(f, "{}", self.msg),
+        }
+    }
+}
+
+/// 业务码/文案 → 语义分类（纯函数）。code 0 不会走到这里（调用方先判成功）。
+pub fn classify_claim(code: Option<i64>, msg: &str) -> ClaimErrKind {
+    match code {
+        Some(1003) => ClaimErrKind::AlreadyClaimed,
+        Some(1004) => ClaimErrKind::NotEligible,
+        Some(3007) => ClaimErrKind::Captcha,
+        // 429 通常出现在 HTTP 状态行，body code 兜底防服务端换表达
+        Some(c) if c == 3002 || c == 429 => ClaimErrKind::RateLimited,
+        Some(c) if (500..=599).contains(&c) => ClaimErrKind::Transient,
+        // msg 兜底：防服务端换码不换文案
+        _ if msg.to_lowercase().contains("captcha") => ClaimErrKind::Captcha,
+        _ => ClaimErrKind::Fatal,
+    }
+}
+
+/// 解析 Retry-After 响应头（RFC 7231：delta-seconds 或 HTTP-date）为毫秒。
+/// 缺失/空/无法解析 → None；指向过去 → Some(0)。
+pub fn parse_retry_after_ms(raw: Option<&str>, now_unix: i64) -> Option<u64> {
+    let v = raw?.trim();
+    if v.is_empty() {
+        return None;
+    }
+    if let Ok(secs) = v.parse::<i64>() {
+        return Some(secs.max(0) as u64 * 1000);
+    }
+    // HTTP-date（IMF-fixdate）是 RFC 2822 的子集，chrono 可直接解析
+    let dt = chrono::DateTime::parse_from_rfc2822(v).ok()?;
+    Some((dt.timestamp() - now_unix).max(0) as u64 * 1000)
+}
+
+fn claim_err_from_response(j: &Value, retry_after_ms: Option<u64>) -> ClaimErr {
+    let code = j.get("code").and_then(|c| c.as_i64());
+    let msg = j
+        .get("msg")
+        .and_then(|m| m.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("领取失败")
+        .to_string();
+    let kind = classify_claim(code, &msg);
+    let rate_wait_ms = if kind == ClaimErrKind::RateLimited {
+        Some(retry_after_ms.unwrap_or(0))
+    } else {
+        None
+    };
+    ClaimErr {
+        msg,
+        code,
+        kind,
+        rate_wait_ms,
+    }
+}
+
+/// POST billing/claim；成功返回 data（含 plan.entitlements[].effective_at 等）。
+/// 验证码为按需索要：先不带验证码头裸领，`kind == Captcha` 时才走人工验证后重领。
 #[allow(clippy::too_many_arguments)] // 与官方请求字段一一对应
 pub fn submit_claim(
     client: &reqwest::blocking::Client,
@@ -360,7 +520,7 @@ pub fn submit_claim(
     plan_id: &str,
     captcha_param: Option<&str>,
     captcha_region: Option<&str>,
-) -> Result<Value, String> {
+) -> Result<Value, ClaimErr> {
     let mut req = client
         .post(api.url(BILLING_CLAIM_PATH))
         .header("Authorization", format!("Bearer {}", token))
@@ -383,23 +543,48 @@ pub fn submit_claim(
     if let Some(r) = captcha_region.filter(|r| !r.trim().is_empty()) {
         req = req.header("X-Aliyun-Captcha-Verify-Region", r.trim());
     }
-    let j: Value = req
+    let resp = req
         .json(&json!({"plan_id": plan_id}))
         .send()
-        .map_err(|e| e.to_string())?
-        .json()
-        .map_err(|e| e.to_string())?;
-    let code = j.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
-    if code != 0 {
-        let msg = j
-            .get("msg")
-            .and_then(|m| m.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or("领取失败");
-        return Err(format!("{}（code {}）", msg, code));
+        // 发送失败（网络层）：无响应可分类，网络故障本身是典型暂时性
+        .map_err(|e| ClaimErr {
+            msg: e.to_string(),
+            code: None,
+            kind: ClaimErrKind::Transient,
+            rate_wait_ms: None,
+        })?;
+    // 以响应到达时刻为基准解析 HTTP-date（请求本身可能耗到 25s 超时）
+    let now = chrono::Utc::now().timestamp();
+    let status = resp.status().as_u16();
+    let retry_after_ms = parse_retry_after_ms(
+        resp.headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok()),
+        now,
+    );
+    let j: Value = match resp.json() {
+        Ok(j) => j,
+        Err(e) => {
+            // 有响应但 body 不可解析：429/5xx 仍可按状态行分类，其余不猜（Fatal）
+            let (kind, rate_wait_ms) = if status == 429 {
+                (ClaimErrKind::RateLimited, Some(retry_after_ms.unwrap_or(0)))
+            } else if (500..=599).contains(&status) {
+                (ClaimErrKind::Transient, None)
+            } else {
+                (ClaimErrKind::Fatal, None)
+            };
+            return Err(ClaimErr {
+                msg: e.to_string(),
+                code: None,
+                kind,
+                rate_wait_ms,
+            });
+        }
+    };
+    if j.get("code").and_then(|c| c.as_i64()) == Some(0) {
+        return Ok(j.get("data").cloned().unwrap_or(Value::Null));
     }
-    Ok(j.get("data").cloned().unwrap_or(Value::Null))
+    Err(claim_err_from_response(&j, retry_after_ms))
 }
 
 /// 领取结果里的生效/到期时间（Unix 秒）
@@ -851,6 +1036,108 @@ mod tests {
     }
 
     #[test]
+    fn classify_claim_covers_every_documented_code() {
+        use ClaimErrKind::*;
+        // 逐码（照 magpie 插件 claimOne 语义表）
+        assert_eq!(classify_claim(Some(1003), "已领取"), AlreadyClaimed);
+        assert_eq!(classify_claim(Some(1004), "无资格"), NotEligible);
+        assert_eq!(classify_claim(Some(3007), "需要验证码"), Captcha);
+        assert_eq!(classify_claim(Some(3002), "请求过于频繁"), RateLimited);
+        assert_eq!(classify_claim(Some(429), "rate"), RateLimited);
+        assert_eq!(classify_claim(Some(500), "server error"), Transient);
+        assert_eq!(classify_claim(Some(599), "server error"), Transient);
+        // msg 兜底：code 未知但 msg 指向 captcha（防服务端换码不换文案）
+        assert_eq!(
+            classify_claim(Some(40001), "captcha verify failed"),
+            Captcha
+        );
+        assert_eq!(classify_claim(Some(40002), "CAPTCHA required"), Captcha);
+        // 其余一律 Fatal（never guess）
+        assert_eq!(classify_claim(Some(40001), "token invalid"), Fatal);
+        assert_eq!(classify_claim(Some(3005), "already claimed today"), Fatal);
+        assert_eq!(classify_claim(None, "boom"), Fatal);
+    }
+
+    #[test]
+    fn retry_after_parsing_seconds_httpdate_and_garbage() {
+        let now = 1_800_000_000_i64;
+        // delta-seconds
+        assert_eq!(parse_retry_after_ms(Some("120"), now), Some(120_000));
+        assert_eq!(parse_retry_after_ms(Some(" 30 "), now), Some(30_000));
+        // 负数/零
+        assert_eq!(parse_retry_after_ms(Some("0"), now), Some(0));
+        assert_eq!(parse_retry_after_ms(Some("-5"), now), Some(0));
+        // HTTP-date：未来 90 秒
+        let future = chrono::DateTime::from_timestamp(now + 90, 0)
+            .unwrap()
+            .to_rfc2822();
+        assert_eq!(parse_retry_after_ms(Some(&future), now), Some(90_000));
+        // HTTP-date：过去时刻 → 0
+        let past = chrono::DateTime::from_timestamp(now - 90, 0)
+            .unwrap()
+            .to_rfc2822();
+        assert_eq!(parse_retry_after_ms(Some(&past), now), Some(0));
+        // 缺失 / 空 / 乱码
+        assert_eq!(parse_retry_after_ms(None, now), None);
+        assert_eq!(parse_retry_after_ms(Some(""), now), None);
+        assert_eq!(parse_retry_after_ms(Some("  "), now), None);
+        assert_eq!(parse_retry_after_ms(Some("soon-ish"), now), None);
+    }
+
+    #[test]
+    fn marketing_429_reads_retry_after_and_marks_transient() {
+        // marketing/touch 是检测主数据源：429 必须带出 Retry-After 供账号级 hold 使用
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(15);
+            while Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let _ = stream.set_nonblocking(false);
+                        let req =
+                            read_http_request(&mut stream, MAX_HTTP_BYTES).unwrap_or_default();
+                        let path = req
+                            .lines()
+                            .next()
+                            .and_then(|l| l.split_whitespace().nth(1))
+                            .unwrap_or("")
+                            .split('?')
+                            .next()
+                            .unwrap_or("")
+                            .to_string();
+                        if !path.ends_with(MARKETING_TOUCH_PATH) {
+                            continue;
+                        }
+                        let body = json!({"code": 429, "msg": "rate limited"}).to_string();
+                        let resp = format!("HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nRetry-After: 45\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+                        let _ = stream.write_all(resp.as_bytes());
+                        break;
+                    }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        let api = ClaimApi::new(format!("http://127.0.0.1:{}", port));
+        let err = marketing_claim_plans(
+            &reqwest::blocking::Client::new(),
+            &api,
+            "tok",
+            "mid",
+            "3.17.1",
+        )
+        .expect_err("429 should be an error");
+        server.join().expect("mock server join");
+        assert!(err.transient);
+        assert_eq!(err.rate_wait_ms, Some(45_000));
+        assert_eq!(err.to_string(), "rate limited");
+    }
+
+    #[test]
     fn claim_protocol_sequence_against_mock_server() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
         listener.set_nonblocking(true).expect("nonblocking");
@@ -919,6 +1206,79 @@ mod tests {
             submit_claim(&client, &api, "tok", "mid1", "3.17.1", "p1", None, None).expect("claim");
         assert_eq!(data.pointer("/plan/name"), Some(&json!("Demo Plan")));
         server.join().expect("mock server join");
+    }
+
+    #[test]
+    fn claim_without_captcha_hits_3007_then_retries_with_param() {
+        // 服务端行为：裸领取返回 3007（要求验证码），带验证码头后成功
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(15);
+            let mut claim_calls = 0;
+            while Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let _ = stream.set_nonblocking(false);
+                        let req =
+                            read_http_request(&mut stream, MAX_HTTP_BYTES).unwrap_or_default();
+                        let path = req
+                            .lines()
+                            .next()
+                            .and_then(|l| l.split_whitespace().nth(1))
+                            .unwrap_or("")
+                            .split('?')
+                            .next()
+                            .unwrap_or("")
+                            .to_string();
+                        if !path.ends_with(BILLING_CLAIM_PATH) {
+                            continue;
+                        }
+                        claim_calls += 1;
+                        let has_captcha =
+                            req.to_lowercase().contains("x-aliyun-captcha-verify-param");
+                        let body = if has_captcha {
+                            json!({"code": 0, "data": {"plan": {"name": "Demo Plan"}}}).to_string()
+                        } else {
+                            json!({"code": 3007, "msg": "请完成安全验证"}).to_string()
+                        };
+                        let resp = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+                        let _ = stream.write_all(resp.as_bytes());
+                        let _ = stream.flush();
+                        if claim_calls >= 2 {
+                            break;
+                        }
+                    }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    Err(_) => break,
+                }
+            }
+            claim_calls
+        });
+        let api = ClaimApi::new(format!("http://127.0.0.1:{}", port));
+        let client = reqwest::blocking::Client::new();
+        // 第一次裸领取 → 3007
+        let err = submit_claim(&client, &api, "tok", "mid1", "3.17.1", "p1", None, None)
+            .expect_err("bare claim should hit 3007");
+        assert_eq!(err.code, Some(3007));
+        assert_eq!(err.kind, ClaimErrKind::Captcha);
+        // （此处用户完成验证码）→ 带验证参数重领 → 成功
+        let data = submit_claim(
+            &client,
+            &api,
+            "tok",
+            "mid1",
+            "3.17.1",
+            "p1",
+            Some("vp-1"),
+            Some("cn"),
+        )
+        .expect("retry with captcha");
+        assert_eq!(data.pointer("/plan/name"), Some(&json!("Demo Plan")));
+        assert_eq!(server.join().expect("join"), 2, "恰好两次 claim 请求");
     }
 
     #[test]
