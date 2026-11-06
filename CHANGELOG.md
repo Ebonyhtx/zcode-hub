@@ -3,7 +3,7 @@
 本文件记录 ZCode Hub 的显著变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [未发布]
+## [1.12.0] - 2026-11-07
 
 ### 新增
 - 领取错误语义分类（照 magpie 社区插件 claimOne 语义表）：1003 已领取（视为成功收尾）、
