@@ -6,7 +6,7 @@ use crate::crypto::{
     decode_bundle, decrypt_value, encode_bundle, encrypt_value, read_snapshot_checked,
     read_snapshot_value, write_snapshot,
 };
-use crate::formats::{self, read_json, write_json, CRED_FILE, ENC_PREFIX};
+use crate::formats::{self, read_json, write_json, CRED_FILE, ENC_ANY_PREFIX};
 use crate::history;
 use crate::identity::{
     cred_fingerprint, ensure_profile_arms_uid, ensure_profile_device_mid,
@@ -201,7 +201,7 @@ pub(crate) fn export_bundle(password: String) -> serde_json::Value {
                     if let Some(obj) = creds.as_object_mut() {
                         for (k, v) in obj.iter_mut() {
                             if let Some(s) = v.as_str() {
-                                if s.starts_with(ENC_PREFIX) {
+                                if s.starts_with(ENC_ANY_PREFIX) {
                                     match decrypt_value(s) {
                                         Ok(plain) => {
                                             *v = json!(plain);
@@ -301,7 +301,7 @@ pub(crate) fn import_bundle(path: String, password: String) -> serde_json::Value
                 .get(formats::FIELD_TOKEN)
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            if tok.starts_with(ENC_PREFIX) && decrypt_value(tok).is_err() {
+            if tok.starts_with(ENC_ANY_PREFIX) && decrypt_value(tok).is_err() {
                 relogin += 1;
             }
             let label = a
@@ -394,7 +394,7 @@ pub(crate) fn inspect_bundle(path: String, password: String) -> serde_json::Valu
             if !has_token {
                 invalid += 1;
             }
-            let needs_relogin = tok.starts_with(ENC_PREFIX) && decrypt_value(tok).is_err();
+            let needs_relogin = tok.starts_with(ENC_ANY_PREFIX) && decrypt_value(tok).is_err();
             if needs_relogin {
                 relogin += 1;
             }

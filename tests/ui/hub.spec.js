@@ -154,10 +154,11 @@ test("claim walks through preparing, captcha and claiming to success", async ({ 
   await expect(btn).toBeVisible();
   await btn.click();
 
-  // 等待验证：按钮文案切到“验证中”，出现步骤条与重开入口
+  // 等待验证：按钮文案切到“验证中”，出现步骤条与重开入口，并提示去验证页
   await expect(page.locator('.acct[data-key="alpha"] .claim-step.on')).toHaveCount(2);
   await expect(page.locator('[data-action="claim-reopen"]')).toBeVisible();
   await expect(btn).toBeDisabled();
+  await expect(page.locator(".toasts")).toContainText("请在验证页完成验证码");
 
   // 领取中：第三步点亮
   await expect(page.locator('.acct[data-key="alpha"] .claim-step.on')).toHaveCount(3);

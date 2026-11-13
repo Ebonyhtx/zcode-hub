@@ -10,6 +10,7 @@
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub const ZCODE_BASE: &str = "https://zcode.z.ai";
@@ -605,15 +606,117 @@ pub fn claim_timing(data: &Value) -> (Option<i64>, Option<i64>, Option<i64>) {
 }
 
 // ---------------- 验证码：本地回环页 + 系统浏览器（不污染应用 CSP） ----------------
+//
+// 服务端按需索要验证码（3007），每次领取各需一轮人工验证；但**验证页可以复用**：
+// 会话在页面持续轮询（心跳）时保持存活（总时限 10 分钟），后续领取直接让同一页进入
+// 下一轮验证，不再新开标签页；页面关闭后心跳超时，下一次领取才新开一页。
 
-/// 启动一次性验证码页：`http://127.0.0.1:<port>/<nonce>/` 加载阿里云 SDK，
-/// 验证通过后把参数 POST 回 `/result`，由主流程取回。超时 150s。
-pub struct CaptchaFlow {
-    pub url: String,
-    rx: std::sync::mpsc::Receiver<Value>,
+const ACTION_WAIT: u8 = 0;
+const ACTION_VERIFY: u8 = 1;
+const ACTION_DONE: u8 = 2;
+
+/// 会话总时限：超过后页面提示可关闭，下一次领取新开一页
+const CAPTCHA_SESSION_TTL_SECS: u64 = 600;
+/// 页面心跳宽限：页面每 1.5s 轮询一次 /next，超过该窗口没动静视为已关闭
+const CAPTCHA_POLL_GRACE_MS: i64 = 6_000;
+
+struct SessionShared {
+    nonce: String,
+    port: u16,
+    created_ms: i64,
+    ttl_ms: i64,
+    /// 页面最近一次请求（心跳）。仅当 `has_result` 后页面才会持续轮询 /next
+    last_poll_ms: std::sync::atomic::AtomicI64,
+    action: std::sync::atomic::AtomicU8,
+    /// 是否已收到过至少一轮结果：之后页面会持续心跳，可据此快速判定页面已关闭
+    has_result: std::sync::atomic::AtomicBool,
+    rx: Mutex<std::sync::mpsc::Receiver<Value>>,
 }
 
-pub fn start_captcha_flow(cfg: &Value) -> Result<CaptchaFlow, String> {
+static CAPTCHA_SESSION: Mutex<Option<Arc<SessionShared>>> = Mutex::new(None);
+
+/// 会话是否仍可复用（纯函数，便于测试）：页面心跳新鲜且未超会话总时限
+fn session_alive(created_ms: i64, last_poll_ms: i64, ttl_ms: i64, now_ms: i64) -> bool {
+    now_ms - last_poll_ms <= CAPTCHA_POLL_GRACE_MS && now_ms - created_ms <= ttl_ms
+}
+
+fn session_url(s: &SessionShared) -> String {
+    format!("http://127.0.0.1:{}/{}/", s.port, s.nonce)
+}
+
+/// 开始或复用验证码会话：返回 (url, reused)。
+/// 复用条件：上一会话的页面仍在轮询（心跳新鲜）且未超过会话总时限。
+pub fn captcha_begin(cfg: &Value) -> Result<(String, bool), String> {
+    captcha_begin_with_ttl(cfg, CAPTCHA_SESSION_TTL_SECS)
+}
+
+fn captcha_begin_with_ttl(cfg: &Value, ttl_secs: u64) -> Result<(String, bool), String> {
+    let now = chrono::Utc::now().timestamp_millis();
+    let mut g = CAPTCHA_SESSION.lock().unwrap();
+    if let Some(old) = g.as_ref() {
+        if session_alive(
+            old.created_ms,
+            old.last_poll_ms.load(std::sync::atomic::Ordering::Relaxed),
+            old.ttl_ms,
+            now,
+        ) {
+            return Ok((session_url(old), true));
+        }
+        // 旧会话标记结束（页面若还开着会收到 done 并提示可关闭）
+        old.action
+            .store(ACTION_DONE, std::sync::atomic::Ordering::Relaxed);
+    }
+    let shared = spawn_session(cfg, ttl_secs)?;
+    let url = session_url(&shared);
+    *g = Some(shared);
+    Ok((url, false))
+}
+
+/// 请求页面开始新一轮验证，并等待用户完成（最多 150s）；返回 {param, region}。
+/// 已收到过结果的会话（页面持续心跳）在心跳停摆时快速失败：用户关了页就别干等 150s。
+pub fn captcha_round() -> Result<Value, String> {
+    use std::sync::atomic::Ordering;
+    let shared = {
+        let g = CAPTCHA_SESSION.lock().unwrap();
+        g.as_ref().cloned().ok_or("验证页未启动")?
+    };
+    shared.action.store(ACTION_VERIFY, Ordering::Relaxed);
+    let rx = shared.rx.lock().unwrap();
+    let started = Instant::now();
+    let total = Duration::from_secs(CAPTCHA_TIMEOUT_SECS + 5);
+    loop {
+        match rx.recv_timeout(Duration::from_secs(2)) {
+            Ok(v) => return Ok(v),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("验证页已关闭，请重新领取".into());
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let now = chrono::Utc::now().timestamp_millis();
+                let page_was_polling = shared.has_result.load(Ordering::Relaxed);
+                let last = shared.last_poll_ms.load(Ordering::Relaxed);
+                if page_was_polling && now - last > CAPTCHA_POLL_GRACE_MS + 4_000 {
+                    shared.action.store(ACTION_WAIT, Ordering::Relaxed);
+                    return Err("验证页已关闭，请重新领取".into());
+                }
+                if started.elapsed() >= total {
+                    shared.action.store(ACTION_WAIT, Ordering::Relaxed);
+                    return Err("验证码超时未完成（请重试）".into());
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn reset_captcha_session() {
+    let mut g = CAPTCHA_SESSION.lock().unwrap();
+    if let Some(old) = g.take() {
+        old.action
+            .store(ACTION_DONE, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+fn spawn_session(cfg: &Value, ttl_secs: u64) -> Result<Arc<SessionShared>, String> {
     let scene_id = cfg
         .get("sceneId")
         .or_else(|| cfg.get("scene_id"))
@@ -643,14 +746,27 @@ pub fn start_captcha_flow(cfg: &Value) -> Result<CaptchaFlow, String> {
         .collect();
     let html = captcha_html(&scene_id, &prefix, &region, &nonce);
     let (tx, rx) = std::sync::mpsc::channel::<Value>();
-    let url = format!("http://127.0.0.1:{}/{}/", port, nonce);
+    let created_ms = chrono::Utc::now().timestamp_millis();
+    let shared = Arc::new(SessionShared {
+        nonce: nonce.clone(),
+        port,
+        created_ms,
+        ttl_ms: (ttl_secs as i64) * 1000,
+        last_poll_ms: std::sync::atomic::AtomicI64::new(created_ms),
+        action: std::sync::atomic::AtomicU8::new(ACTION_WAIT),
+        has_result: std::sync::atomic::AtomicBool::new(false),
+        rx: Mutex::new(rx),
+    });
 
+    let s = shared.clone();
     std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(CAPTCHA_TIMEOUT_SECS);
-        let ok = tx.clone();
+        use std::sync::atomic::Ordering;
+        let deadline = Instant::now() + Duration::from_secs(ttl_secs);
         while Instant::now() < deadline {
             match listener.accept() {
                 Ok((mut stream, _)) => {
+                    s.last_poll_ms
+                        .store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
                     let req = match read_http_request(&mut stream, MAX_HTTP_BYTES) {
                         Ok(r) => r,
                         Err(_) => {
@@ -671,16 +787,27 @@ pub fn start_captcha_flow(cfg: &Value) -> Result<CaptchaFlow, String> {
                         let _ = stream.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
                         continue;
                     }
-                    let page_path = format!("/{}/", nonce);
-                    let bare_path = format!("/{}", nonce);
+                    let page_path = format!("/{}/", s.nonce);
+                    let bare_path = format!("/{}", s.nonce);
+                    let next_path = format!("/{}/next", s.nonce);
                     if method == "GET" && (path == page_path || path == bare_path) {
                         let resp = format!(
                             "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                             html.len(), html);
                         let _ = stream.write_all(resp.as_bytes());
+                    } else if method == "GET" && path == next_path {
+                        // 页面心跳：领取流程请求下一轮验证时返回 verify（只消费一次）
+                        let (body, next) = match s.action.load(Ordering::Relaxed) {
+                            ACTION_VERIFY => ("{\"action\":\"verify\"}", ACTION_WAIT),
+                            ACTION_DONE => ("{\"action\":\"done\"}", ACTION_DONE),
+                            _ => ("{\"action\":\"wait\"}", ACTION_WAIT),
+                        };
+                        s.action.store(next, Ordering::Relaxed);
+                        let resp = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+                        let _ = stream.write_all(resp.as_bytes());
                     } else if method == "OPTIONS" {
                         let _ = stream.write_all(b"HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: http://127.0.0.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-                    } else if method == "POST" && path == format!("/{}/result", nonce) {
+                    } else if method == "POST" && path == format!("/{}/result", s.nonce) {
                         // 校验来源与类型：结果只允许本页脚本提交
                         let origin_ok = match header_value(head, "origin") {
                             Some(o) => {
@@ -700,8 +827,10 @@ pub fn start_captcha_flow(cfg: &Value) -> Result<CaptchaFlow, String> {
                         let v: Value = serde_json::from_str(body).unwrap_or(json!({}));
                         let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"ok\":true}");
                         let _ = stream.flush();
-                        let _ = ok.send(v);
-                        return;
+                        // 一轮结果交回主流程；会话继续服务下一轮
+                        s.has_result.store(true, Ordering::Relaxed);
+                        let _ = tx.send(v);
+                        s.action.store(ACTION_WAIT, Ordering::Relaxed);
                     } else {
                         let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
                     }
@@ -714,7 +843,7 @@ pub fn start_captcha_flow(cfg: &Value) -> Result<CaptchaFlow, String> {
         }
     });
 
-    Ok(CaptchaFlow { url, rx })
+    Ok(shared)
 }
 
 fn find_header_end(b: &[u8]) -> Option<usize> {
@@ -773,13 +902,6 @@ fn read_http_request(stream: &mut TcpStream, limit: usize) -> Result<String, Str
     Ok(String::from_utf8_lossy(&buf).to_string())
 }
 
-/// 等待用户完成验证（最多 150s）；返回 {param, region}
-pub fn wait_captcha(flow: CaptchaFlow) -> Result<Value, String> {
-    flow.rx
-        .recv_timeout(Duration::from_secs(CAPTCHA_TIMEOUT_SECS + 5))
-        .map_err(|_| "验证码超时未完成（请重试）".to_string())
-}
-
 fn captcha_html(scene_id: &str, prefix: &str, region: &str, nonce: &str) -> String {
     // 配置值来自服务端：除反斜杠/引号外还要转义 < > & 与 U+2028/2029，
     // 否则 `</script>` 或换行可以提前终止脚本块。
@@ -814,19 +936,35 @@ h3{{font-size:16px;margin:0 0 8px}}#st{{color:#9aa1b2;font-size:12px;min-height:
 <script>
 var SCENE_ID='{scene}', PREFIX='{prefix}', REGION='{region}', NONCE='{nonce}';
 var st=document.getElementById('st'), det=document.getElementById('det'), btn=document.getElementById('cap-btn');
-var submitted=false;
+var submitted=false, polling=false;
 function say(t){{st.textContent=t}}
-function post(p){{ if(submitted||!p) return; submitted=true; say('验证通过，正在领取…');
+function post(p){{ if(submitted||!p) return; submitted=true; say('验证通过，正在提交…');
   fetch('/'+NONCE+'/result',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{param:p,region:REGION}})}})
-    .then(function(){{say('已提交，请返回 ZCode Hub')}}).catch(function(e){{det.textContent=String(e)}}); }}
+    .then(function(){{say('已提交，请返回 ZCode Hub（保持此页打开，后续领取会继续使用本页）'); startPoll();}})
+    .catch(function(e){{det.textContent=String(e)}}); }}
+// 心跳：领取流程请求下一轮验证时返回 verify；会话结束时返回 done
+function startPoll(){{ if(polling) return; polling=true;
+  (function loop(){{
+    fetch('/'+NONCE+'/next',{{cache:'no-store'}}).then(function(r){{return r.json()}}).then(function(j){{
+      if(j&&j.action==='verify'){{ rearm(); }}
+      else if(j&&j.action==='done'){{ say('本次验证会话已结束，可关闭此页。'); polling=false; return; }}
+      setTimeout(loop, 1500);
+    }}).catch(function(){{ say('验证页已失效，请在 ZCode Hub 重新领取。'); polling=false; }});
+  }})(); }}
+function rearm(){{ submitted=false; det.textContent=''; btn.hidden=true; say('收到新的领取请求，请完成验证…'); arm(); }}
+function arm(){{
+  if(window.__ins&&typeof window.__ins.startTracelessVerification==='function'){{
+    try{{ window.__ins.startTracelessVerification();
+      setTimeout(function(){{ if(!submitted){{ say('如未自动通过，请点击下方按钮完成验证'); btn.hidden=false; }} }},8000);
+      return;
+    }}catch(e){{}}
+  }}
+  say('请点击下方按钮完成验证'); btn.hidden=false; }}
 var s=document.createElement('script'); s.src='https://o.alicdn.com/captcha-frontend/aliyunCaptcha/AliyunCaptcha.js';
 s.onload=function(){{ window.AliyunCaptchaConfig={{region:REGION,prefix:PREFIX}};
   window.initAliyunCaptcha({{ SceneId:SCENE_ID, mode:'popup', language:'zh-CN', showErrorTip:false,
     element:'#cap-holder', button:'#cap-btn',
-    getInstance:function(ins){{ if(ins&&typeof ins.startTracelessVerification==='function'){{
-        ins.startTracelessVerification();
-        setTimeout(function(){{ if(!submitted){{ say('如未自动通过，请点击下方按钮完成验证'); btn.hidden=false; }} }},8000);
-      }} else {{ btn.hidden=false; say('请点击下方按钮完成验证'); }} }},
+    getInstance:function(ins){{ window.__ins=ins; arm(); }},
     success:function(p){{ post(typeof p==='string'?p:(p&&p.captchaVerifyParam)); }},
     fail:function(p){{ say('验证未通过，请重试'); det.textContent=JSON.stringify(p||'').slice(0,200); }},
     onError:function(p){{ say('验证异常，请重试'); det.textContent=JSON.stringify(p||'').slice(0,200); }} }}); }};
@@ -975,13 +1113,63 @@ mod tests {
         assert_eq!(plans[0]["plan_id"], json!("p1"));
     }
 
+    /// 验证码会话是进程级全局：会话类测试串行，避免互相复用/覆盖
+    static CAPTCHA_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn captcha_cfg() -> Value {
+        json!({"enabled": true, "sceneId": "scene-test", "prefix": "px", "region": "cn"})
+    }
+
+    /// 轮询 /next 直到返回期望动作（模拟页面心跳）
+    fn poll_next_until(client: &reqwest::blocking::Client, url: &str, want: &str) {
+        let next_url = format!("{}/next", url.trim_end_matches('/'));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            let j: Value = client
+                .get(&next_url)
+                .send()
+                .expect("poll next")
+                .json()
+                .expect("next json");
+            if j["action"] == json!(want) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("next action never became {}", want);
+    }
+
+    fn post_result(client: &reqwest::blocking::Client, url: &str, param: Value) {
+        let result_url = format!("{}/result", url.trim_end_matches('/'));
+        let r = client
+            .post(&result_url)
+            .json(&json!({"param": param, "region": "cn"}))
+            .send()
+            .expect("POST result");
+        assert!(r.status().is_success());
+    }
+
+    #[test]
+    fn session_alive_needs_fresh_heartbeat_and_ttl() {
+        let t0 = 1_000_000_i64;
+        let ttl = 600_000_i64;
+        assert!(session_alive(t0, t0, ttl, t0 + 1_000));
+        // 心跳新鲜（页面刚轮询过）→ 可复用
+        assert!(session_alive(t0, t0 + 5_000, ttl, t0 + 6_000));
+        // 心跳过期（页面已关闭）→ 不再复用，下次领取新开一页
+        assert!(!session_alive(t0, t0, ttl, t0 + 10_000));
+        // 超过会话总时限 → 即使页面还在轮询也不复用
+        assert!(!session_alive(t0, t0 + 600_000, ttl, t0 + 601_000));
+    }
+
     #[test]
     fn captcha_loopback_serves_page_and_receives_result() {
-        let cfg = json!({"enabled": true, "sceneId": "scene-test", "prefix": "px", "region": "cn"});
-        let flow = start_captcha_flow(&cfg).expect("flow start");
-        let url = flow.url.clone();
+        let _guard = CAPTCHA_TEST_LOCK.lock().unwrap();
+        reset_captcha_session();
+        let (url, reused) = captcha_begin_with_ttl(&captcha_cfg(), 5).expect("session start");
+        assert!(!reused);
         let client = reqwest::blocking::Client::new();
-        // 页面可访问且包含 SDK 与 nonce
+        // 页面可访问且包含 SDK、nonce 与心跳端点
         let page = client
             .get(&url)
             .send()
@@ -990,41 +1178,72 @@ mod tests {
             .expect("page text");
         assert!(page.contains("AliyunCaptcha.js"));
         assert!(page.contains("scene-test"));
-        // 页面把验证参数 POST 回来 → 主流程应收到
-        let result_url = format!("{}/result", url.trim_end_matches('/'));
-        let r = client
-            .post(&result_url)
-            .json(&json!({"param": "p123", "region": "cn"}))
-            .send()
-            .expect("POST result");
-        assert!(r.status().is_success());
-        let got = wait_captcha(flow).expect("receive param");
+        assert!(page.contains("/next"), "页面必须轮询 /next 才能复用会话");
+        // 领取流程请求本轮验证 → 页面看到 verify → 提交参数 → 主流程收到
+        let round = std::thread::spawn(captcha_round);
+        poll_next_until(&client, &url, "verify");
+        post_result(&client, &url, json!("p123"));
+        let got = round.join().expect("join").expect("receive param");
         assert_eq!(got["param"], json!("p123"));
         assert_eq!(got["region"], json!("cn"));
+        // 一轮结束后页面回到等待态
+        let next_url = format!("{}/next", url.trim_end_matches('/'));
+        let j: Value = client
+            .get(&next_url)
+            .send()
+            .expect("next")
+            .json()
+            .expect("next json");
+        assert_eq!(j["action"], json!("wait"));
+        reset_captcha_session();
+    }
+
+    #[test]
+    fn captcha_session_reuses_page_across_rounds() {
+        let _guard = CAPTCHA_TEST_LOCK.lock().unwrap();
+        reset_captcha_session();
+        let client = reqwest::blocking::Client::new();
+        let cfg = captcha_cfg();
+        let (url, reused) = captcha_begin_with_ttl(&cfg, 5).expect("session start");
+        assert!(!reused);
+        // 第一轮
+        let r1 = std::thread::spawn(captcha_round);
+        poll_next_until(&client, &url, "verify");
+        post_result(&client, &url, json!("first"));
+        assert_eq!(r1.join().unwrap().unwrap()["param"], json!("first"));
+        // 页面心跳仍新鲜 → 第二次领取复用同一页（不新开标签页）
+        let (url2, reused2) = captcha_begin_with_ttl(&cfg, 5).expect("reuse session");
+        assert!(reused2, "心跳新鲜时必须复用");
+        assert_eq!(url2, url);
+        // 第二轮走同一页
+        let r2 = std::thread::spawn(captcha_round);
+        poll_next_until(&client, &url2, "verify");
+        post_result(&client, &url2, json!("second"));
+        assert_eq!(r2.join().unwrap().unwrap()["param"], json!("second"));
+        reset_captcha_session();
     }
 
     #[test]
     fn captcha_loopback_reads_body_larger_than_8k() {
-        let cfg = json!({"enabled": true, "sceneId": "scene-test", "prefix": "px", "region": "cn"});
-        let flow = start_captcha_flow(&cfg).expect("flow start");
-        let result_url = format!("{}/result", flow.url.trim_end_matches('/'));
-        let big = "p".repeat(20_000);
+        let _guard = CAPTCHA_TEST_LOCK.lock().unwrap();
+        reset_captcha_session();
+        let (url, _) = captcha_begin_with_ttl(&captcha_cfg(), 5).expect("session start");
         let client = reqwest::blocking::Client::new();
-        let r = client
-            .post(&result_url)
-            .json(&json!({"param": big, "region": "cn"}))
-            .send()
-            .expect("POST result");
-        assert!(r.status().is_success());
-        let got = wait_captcha(flow).expect("receive param");
+        let round = std::thread::spawn(captcha_round);
+        poll_next_until(&client, &url, "verify");
+        let big = "p".repeat(20_000);
+        post_result(&client, &url, json!(big));
+        let got = round.join().expect("join").expect("receive param");
         assert_eq!(got["param"].as_str().unwrap().len(), 20_000);
+        reset_captcha_session();
     }
 
     #[test]
     fn captcha_loopback_rejects_foreign_origin() {
-        let cfg = json!({"enabled": true, "sceneId": "scene-test", "prefix": "px", "region": "cn"});
-        let flow = start_captcha_flow(&cfg).expect("flow start");
-        let result_url = format!("{}/result", flow.url.trim_end_matches('/'));
+        let _guard = CAPTCHA_TEST_LOCK.lock().unwrap();
+        reset_captcha_session();
+        let (url, _) = captcha_begin_with_ttl(&captcha_cfg(), 5).expect("session start");
+        let result_url = format!("{}/result", url.trim_end_matches('/'));
         let client = reqwest::blocking::Client::new();
         let r = client
             .post(&result_url)
@@ -1033,6 +1252,7 @@ mod tests {
             .send()
             .expect("POST result");
         assert_eq!(r.status().as_u16(), 403);
+        reset_captcha_session();
     }
 
     #[test]
@@ -1289,5 +1509,8 @@ mod tests {
         assert!(h.contains("NONCE='abc123'"));
         assert!(h.contains("startTracelessVerification"));
         assert!(h.contains("NONCE+'/result'"));
+        // 多轮复用：页面必须轮询 /next，并在拿到 verify 后重新武装
+        assert!(h.contains("NONCE+'/next'"));
+        assert!(h.contains("rearm"));
     }
 }

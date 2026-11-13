@@ -23,6 +23,10 @@ pub const PROVIDER_ZAI: &str = "zai";
 pub const PROVIDER_BIGMODEL: &str = "bigmodel";
 /// enc:v1 字段加密前缀（官方格式的一部分，不可改）
 pub const ENC_PREFIX: &str = "enc:v1:";
+/// 任意加密值前缀（v1 固定派生密钥 / v2 系统凭据库）。
+/// 判断「这个值是否加密」必须用它——只认 `enc:v1:` 会把 v2 密文当明文处理
+/// （3.18.0 客户端升级后曾把密文当账号名显示，见 docs/DESIGN.md §5）。
+pub const ENC_ANY_PREFIX: &str = "enc:";
 
 pub fn oauth_field(provider: &str, kind: &str) -> String {
     format!("oauth:{}:{}", provider, kind)
@@ -81,7 +85,7 @@ pub fn account_label_with(creds: &Value, decrypt: &DecryptFn) -> String {
         }
     }
     match creds.get(FIELD_ACTIVE_PROVIDER).and_then(|v| v.as_str()) {
-        Some(ap) if ap.starts_with(ENC_PREFIX) => "(已加密账号)".into(),
+        Some(ap) if ap.starts_with(ENC_ANY_PREFIX) => "(已加密账号)".into(),
         Some(ap) => ap.to_string(),
         _ => "(未知)".into(),
     }
@@ -122,7 +126,7 @@ pub fn jwt_expired_with(
     let Some(raw) = creds.get(FIELD_TOKEN).and_then(|v| v.as_str()) else {
         return false;
     };
-    let jwt = if raw.starts_with(ENC_PREFIX) {
+    let jwt = if raw.starts_with(ENC_ANY_PREFIX) {
         match decrypt(raw) {
             Some(j) => j,
             None => return false,
@@ -587,6 +591,27 @@ mod tests {
         assert!(!jwt_expired_with(&no_exp, &fake_decrypt, now, 30));
         assert!(!jwt_expired_with(&json!({}), &fake_decrypt, now, 30));
         assert!(jwt_expired_with(&expired_creds(), &fake_decrypt, now, 30));
+    }
+
+    #[test]
+    fn enc_v2_values_are_treated_as_encrypted_not_plaintext() {
+        // 3.18.0 起客户端写 enc:v2:os:…；只认 enc:v1: 会把密文当明文/当标签显示
+        let v2 = "enc:v2:os:66ed525b5a14d67f611de133:RarpPjMqM.aaaa.bbbb";
+        // 标签回退：解不开时给占位符，绝不显示密文原文
+        let creds = json!({ FIELD_ACTIVE_PROVIDER: v2, FIELD_TOKEN: v2 });
+        assert_eq!(account_label_with(&creds, &|_| None), "(已加密账号)");
+        // JWT 过期判定：v2 密文按「加密值」走解密回调，而不是当明文 JWT
+        let now: i64 = 1_700_000_000;
+        let expired_jwt = make_jwt(&format!("{{\"exp\":{}}}", now - 10));
+        let creds = json!({ FIELD_TOKEN: v2 });
+        assert!(jwt_expired_with(
+            &creds,
+            &|_: &str| Some(expired_jwt.clone()),
+            now,
+            30
+        ));
+        // 解不开 → 未过期（沿用既有「不误报」语义），但绝不把密文当 JWT
+        assert!(!jwt_expired_with(&creds, &|_: &str| None, now, 30));
     }
 
     #[test]
