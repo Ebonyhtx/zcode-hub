@@ -11,6 +11,7 @@ mod app;
 mod backup;
 mod benefits;
 mod client;
+mod creds_v2;
 mod crypto;
 mod diagnostics;
 mod identity;

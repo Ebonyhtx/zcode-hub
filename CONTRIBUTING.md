@@ -89,10 +89,12 @@ git config core.hooksPath .githooks
 ZCode 客户端每升级一次，`credentials.json` 都可能多出新键。Hub 的设计是「只增不丢」（见
 `docs/DESIGN.md` §6），所以**加字段不需要改代码**——但需要确认新版本没有改结构：
 
-1. 跑只读探针，确认 `enc:v1` 仍然解得开（应输出 `ALL OK`）：
+1. 跑只读探针，确认加密字段都解得开（每行应输出 `ALL OK`；v1 与 3.18+ 的 `enc:v2:os` 都覆盖，
+   v2 走 Windows Credential Manager 的只读枚举）：
    ```bash
    python -I scripts/probe-client-compat.py
    ```
+   若客户端换成新格式，Rust 侧同款探针：`cargo test probe_real_v2_credentials -- --ignored --nocapture`。
 2. 比对字段集合，看有没有**按账号变化**的新键（键名里内嵌账号/组织 ID）。
    有的话在 `src-tauri/src/formats.rs` 的 `ACCOUNT_SCOPED_PREFIXES` 加一行前缀。
 3. 跑 `cargo test`，特别是 `probe_*` 与 `merge_*` 系列——结构变更会先打破这些测试。

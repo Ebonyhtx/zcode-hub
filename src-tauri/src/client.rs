@@ -16,7 +16,7 @@ pub(crate) const EXE_CACHE_SECS: i64 = 300;
 // Hub 的格式知识锚定在这个版本上；它只用于**展示与提示**，不是切换的门禁。
 // 真正的判据是 formats::probe_credentials 的结构探测：客户端加字段不算问题，
 // 改结构才会被探测抓到。升级客户端后按 CONTRIBUTING 的清单复核并更新此常量。
-pub(crate) const VERIFIED_CLIENT_VERSION: &str = "3.17.2";
+pub(crate) const VERIFIED_CLIENT_VERSION: &str = "3.18.2";
 
 /// 未检测到客户端时的请求头回退版本（必须是 x.y.z 形态）
 pub(crate) const DEFAULT_CLIENT_VERSION: &str = "3.17.2";

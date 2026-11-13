@@ -7,7 +7,7 @@ use crate::crypto::{decrypt_value, read_snapshot_checked, read_snapshot_value, w
 
 #[cfg(test)]
 use crate::crypto::encrypt_value;
-use crate::formats::{self, read_json, write_json, ENC_PREFIX};
+use crate::formats::{self, read_json, write_json, ENC_ANY_PREFIX};
 use crate::platform;
 use crate::settings::load_settings;
 use crate::util::{audit_log, cred_path, denied, profiles_dir, safe_key, sanitize_label, v2_dir};
@@ -39,7 +39,7 @@ pub(crate) struct ProfileInfo {
 pub(crate) fn cred_fingerprint(creds: &Value) -> Option<String> {
     let raw = creds.get(formats::FIELD_TOKEN).and_then(|v| v.as_str())?;
     // 兼容旧明文存档：enc:v1 才解密，否则把原文当作 token
-    let plain = if raw.starts_with(ENC_PREFIX) {
+    let plain = if raw.starts_with(ENC_ANY_PREFIX) {
         decrypt_value(raw).ok()?
     } else {
         raw.to_string()
@@ -705,7 +705,7 @@ pub(crate) fn get_jwt_token(key: &str) -> Result<String, String> {
         .get(formats::FIELD_TOKEN)
         .and_then(|v| v.as_str())
         .ok_or("no jwt")?;
-    if raw.starts_with(ENC_PREFIX) {
+    if raw.starts_with(ENC_ANY_PREFIX) {
         decrypt_value(raw)
     } else {
         Ok(raw.to_string())

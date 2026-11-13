@@ -1,6 +1,6 @@
 [package]
 name = "zcode-hub"
-version = "1.12.0"
+version = "1.12.1"
 edition = "2021"
 license = "MIT"
 
@@ -25,6 +25,10 @@ rand = "0.10"
 uuid = { version = "1", features = ["v4"] }
 url = "2"
 zeroize = "1"
+
+# enc:v2:os 系统凭据库（Windows Credential Manager）兼容：只用到 CredEnumerateW/CredFree
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Security_Credentials"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

@@ -669,15 +669,18 @@ fn run_captcha_and_claim(
         kind: claim::ClaimErrKind::Captcha,
         rate_wait_ms: None,
     };
-    let flow = claim::start_captcha_flow(cfg).map_err(captcha_err)?;
-    let captcha_url = flow.url.clone();
+    // 复用同一验证页：页面还在轮询（心跳新鲜）时不再新开标签页，
+    // 由页面自己进入下一轮验证；页面已关闭才新开一页。
+    let (captcha_url, reused) = claim::captcha_begin(cfg).map_err(captcha_err)?;
     set_claim_state(
         json!({"status":"waiting_captcha","key": key, "planName": plan_name,
         "planId": plan_id, "captchaUrl": captcha_url,
         "updatedAt": chrono::Utc::now().timestamp()}),
     );
-    platform::open_in_browser(&flow.url);
-    let v = claim::wait_captcha(flow).map_err(captcha_err)?;
+    if !reused {
+        platform::open_in_browser(&captcha_url);
+    }
+    let v = claim::captcha_round().map_err(captcha_err)?;
     let param = v
         .get("param")
         .and_then(|p| p.as_str())

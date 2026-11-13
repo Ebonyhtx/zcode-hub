@@ -183,25 +183,25 @@ pub(crate) fn derive_key(secret: &str) -> zeroize::Zeroizing<[u8; 32]> {
 }
 
 // 可注入变体：契约测试 / 未来密钥迁移用；enc:v1 的 IV.TAG.CT 布局是铁律 #1，不可动
-pub(crate) fn encrypt_with(key: &[u8; 32], plain: &str) -> Result<String, String> {
+/// 生成 `iv.tag.ct`（base64url），不带前缀；v1/v2 共用同一 AES-GCM 布局。
+pub(crate) fn seal_payload(key: &[u8; 32], plain: &str) -> Result<String, String> {
     let iv: [u8; 12] = rand::random();
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| e.to_string())?;
     let ct = cipher
         .encrypt(Nonce::from_slice(&iv), plain.as_bytes())
         .map_err(|e| e.to_string())?;
     let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    // 布局必须与 decrypt_with 一致：IV.TAG.CT（tag 在中段，密文在末段）
+    // 布局必须与 open_payload 一致：IV.TAG.CT（tag 在中段，密文在末段）
     Ok(format!(
-        "{}{}.{}.{}",
-        ENC_PREFIX,
+        "{}.{}.{}",
         engine.encode(iv),
         engine.encode(&ct[ct.len() - 16..]),
         engine.encode(&ct[..ct.len() - 16])
     ))
 }
 
-pub(crate) fn decrypt_with(key: &[u8; 32], encrypted: &str) -> Result<String, String> {
-    let payload = encrypted.strip_prefix(ENC_PREFIX).ok_or("not encrypted")?;
+/// 解开 `iv.tag.ct`（base64url），校验长度后 AES-GCM 解密；v1/v2 共用。
+pub(crate) fn open_payload(key: &[u8; 32], payload: &str) -> Result<String, String> {
     let parts: Vec<&str> = payload.split('.').collect();
     if parts.len() != 3 {
         return Err("invalid format".into());
@@ -228,8 +228,36 @@ pub(crate) fn decrypt_with(key: &[u8; 32], encrypted: &str) -> Result<String, St
     String::from_utf8(plain).map_err(|e| e.to_string())
 }
 
-pub(crate) fn decrypt_value(encrypted: &str) -> Result<String, String> {
+pub(crate) fn encrypt_with(key: &[u8; 32], plain: &str) -> Result<String, String> {
+    Ok(format!("{}{}", ENC_PREFIX, seal_payload(key, plain)?))
+}
+
+pub(crate) fn decrypt_with(key: &[u8; 32], encrypted: &str) -> Result<String, String> {
+    let payload = encrypted.strip_prefix(ENC_PREFIX).ok_or("not encrypted")?;
+    open_payload(key, payload)
+}
+
+/// 可注入密钥来源的解密（测试用；生产走 [`decrypt_value`]）。
+pub(crate) fn decrypt_value_with(
+    encrypted: &str,
+    key_for: &dyn Fn(&crate::creds_v2::V2Value) -> Option<zeroize::Zeroizing<[u8; 32]>>,
+) -> Result<String, String> {
+    if let Some(v2) = crate::creds_v2::parse(encrypted) {
+        // 指纹必须与密钥一致：防错密钥 / 错目录 / 伪造密文（v2 永不尝试弱派生密钥）
+        let key = key_for(&v2).ok_or("v2 key unavailable")?;
+        if crate::creds_v2::fingerprint_of(&key) != v2.fingerprint {
+            return Err("v2 fingerprint mismatch".into());
+        }
+        return open_payload(&key, &v2.payload);
+    }
     decrypt_with(&derive_key(&credential_secret()), encrypted)
+}
+
+pub(crate) fn decrypt_value(encrypted: &str) -> Result<String, String> {
+    decrypt_value_with(encrypted, &|v2| match v2.source {
+        crate::creds_v2::V2Source::Os => crate::creds_v2::os_key(&v2.fingerprint),
+        crate::creds_v2::V2Source::Env => crate::creds_v2::env_key(),
+    })
 }
 
 pub(crate) fn encrypt_value(plain: &str) -> String {
@@ -412,5 +440,65 @@ mod tests {
         std::fs::remove_file(dir.join("credentials.snap")).unwrap();
         assert!(read_snapshot_with_key(&dir, &key).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v2_decrypt_routes_by_source_and_verifies_fingerprint() {
+        let key = [9u8; 32];
+        let fp = crate::creds_v2::fingerprint_of(&key);
+        let payload = seal_payload(&key, "hello-v2").unwrap();
+        let value = format!("enc:v2:os:{}:{}", fp, payload);
+        let store = |_: &crate::creds_v2::V2Value| Some(zeroize::Zeroizing::new(key));
+        assert_eq!(decrypt_value_with(&value, &store).unwrap(), "hello-v2");
+        // env 来源同样可用（测试注入不区分来源，这里只验证路由与指纹）
+        let env_value = format!("enc:v2:env:{}:{}", fp, payload);
+        let env_store = |v: &crate::creds_v2::V2Value| {
+            (v.source == crate::creds_v2::V2Source::Env).then_some(zeroize::Zeroizing::new(key))
+        };
+        assert_eq!(
+            decrypt_value_with(&env_value, &env_store).unwrap(),
+            "hello-v2"
+        );
+        // 密钥不可用（系统库拒绝/未登录）→ Err，调用方按「暂时不可读」处理
+        let none = |_: &crate::creds_v2::V2Value| None;
+        assert!(decrypt_value_with(&value, &none).is_err());
+        // 指纹不匹配（错密钥/错目录/伪造）→ Err，绝不把猜测结果当明文
+        let wrong = |_: &crate::creds_v2::V2Value| Some(zeroize::Zeroizing::new([8u8; 32]));
+        assert!(decrypt_value_with(&value, &wrong).is_err());
+        // 载荷被篡改 → GCM 认证失败
+        let tampered = format!(
+            "enc:v2:os:{}:{}.{}.{}",
+            fp, "AAAAAAAAAAAAAAAA", "AAAAAAAAAAAAAAAAAAAAAA", "AAAA"
+        );
+        assert!(decrypt_value_with(&tampered, &store).is_err());
+    }
+
+    #[test]
+    #[ignore] // 只在本机手动运行：读真实凭据文件做只读兼容探针
+    fn probe_real_v2_credentials() {
+        let path = dirs::home_dir()
+            .expect("home")
+            .join(".zcode/v2/credentials.json");
+        let raw = std::fs::read_to_string(&path).expect("read live credentials");
+        let v: serde_json::Value = serde_json::from_str(&raw).expect("parse");
+        let mut ok = 0usize;
+        let mut fail = 0usize;
+        for (k, val) in v.as_object().expect("object") {
+            if let Some(s) = val.as_str() {
+                match decrypt_value(s) {
+                    Ok(p) if !p.is_empty() => ok += 1,
+                    Ok(_) => {
+                        fail += 1;
+                        println!("EMPTY {k}");
+                    }
+                    Err(e) => {
+                        fail += 1;
+                        println!("FAIL {k}: {e}");
+                    }
+                }
+            }
+        }
+        println!("real credentials: ok={ok} fail={fail}");
+        assert!(fail == 0, "some real fields failed to decrypt");
     }
 }

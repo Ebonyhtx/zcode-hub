@@ -44,7 +44,7 @@ var I18N = {
     plan_pending: "{t} 生效", plan_active_syncing: "已生效 · 额度同步中", plan_daily: "/天",
     not_checked: "未检测", ben_none: "无待领福利", ben_has: "{n} 个待领福利", ben_fail: "检测失败：{e}", ben_transient: "暂时无法检测，稍后自动重试", ben_hold: "限流等待中，{time} 恢复",
     claim: "去领取", claim_btn_prep: "准备中", claim_btn_verify: "验证中", claim_btn_claim: "领取中",
-    claim_wait: "请在浏览器完成验证码，通过后会自动领取。", claim_ok: "领取成功：{p}（{t} 生效）", claim_fail: "领取失败：{e}", claim_busy: "上一次领取仍在进行中，请稍候。",
+    claim_wait: "请在验证页完成验证码，通过后会自动领取。验证页保持打开，后续领取会继续复用同一页。", claim_ok: "领取成功：{p}（{t} 生效）", claim_fail: "领取失败：{e}", claim_busy: "上一次领取仍在进行中，请稍候。",
     claim_already: "该福利今日已领取", claim_not_eligible: "活动此刻未开放，稍后自动复查", claim_rate_hold: "账号限流中，{time} 前不再请求，稍后自动恢复",
     claim_timeout: "等待验证超时，请重试。", claim_bg: "领取仍在后台进行，完成后会自动刷新。", claim_reopen: "重新打开验证页",
     claim_steps_prep: "准备", claim_steps_verify: "浏览器验证", claim_steps_claim: "领取",
@@ -124,7 +124,7 @@ var I18N = {
     plan_pending: "starts {t}", plan_active_syncing: "active · syncing quota", plan_daily: "/day",
     not_checked: "Not checked", ben_none: "Nothing to claim", ben_has: "{n} claimable", ben_fail: "Check failed: {e}", ben_transient: "Check temporarily unavailable — will retry", ben_hold: "Rate-limited; retry after {time}",
     claim: "Claim", claim_btn_prep: "Preparing", claim_btn_verify: "Verifying", claim_btn_claim: "Claiming",
-    claim_wait: "Complete the captcha in your browser — claiming continues automatically.", claim_ok: "Claimed: {p} (starts {t})", claim_fail: "Claim failed: {e}", claim_busy: "A claim is already in progress. Please wait.",
+    claim_wait: "Complete the captcha in the verification page — claiming continues automatically. Keep the page open; later claims will reuse it.", claim_ok: "Claimed: {p} (starts {t})", claim_fail: "Claim failed: {e}", claim_busy: "A claim is already in progress. Please wait.",
     claim_already: "Already claimed today", claim_not_eligible: "The campaign isn't open yet — it will be re-checked automatically", claim_rate_hold: "Rate-limited: no requests until {time}; it will recover automatically",
     claim_timeout: "Verification timed out. Please retry.", claim_bg: "Claim is still running in the background; the UI will refresh when it finishes.", claim_reopen: "Reopen verification page",
     claim_steps_prep: "Prepare", claim_steps_verify: "Browser check", claim_steps_claim: "Claim",
@@ -1073,6 +1073,7 @@ function pollClaimState() {
   if (S.claimTimer) clearInterval(S.claimTimer);
   var started = Date.now();
   var messageShown = false;
+  var waitToasted = false;
   var finished = false;
   function finish(success, msg, type) {
     if (finished) return;
@@ -1121,6 +1122,11 @@ function pollClaimState() {
           : t("claim_fail", {e: localizeErr(s.message || "?")});
         finish(false, fmsg);
         return;
+      }
+      // 进入等待验证：提示一次（验证页会复用，用户只需切回已打开的那一页）
+      if (s.status === "waiting_captcha" && !waitToasted) {
+        waitToasted = true;
+        pushToast(t("claim_wait"), "warn");
       }
       S.claim = { status: s.status, planId: s.planId || (S.claim && S.claim.planId), planName: s.planName || (S.claim && S.claim.planName), key: S.claim && S.claim.key, captchaUrl: s.captchaUrl };
       renderAll();
