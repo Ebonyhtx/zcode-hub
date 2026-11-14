@@ -28,7 +28,7 @@ zeroize = "1"
 
 # enc:v2:os 系统凭据库（Windows Credential Manager）兼容：只用到 CredEnumerateW/CredFree
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Security_Credentials"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Credentials"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
