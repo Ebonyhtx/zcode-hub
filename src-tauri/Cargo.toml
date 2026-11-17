@@ -30,6 +30,11 @@ zeroize = "1"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Security_Credentials"] }
 
+# enc:v2:os 系统凭据库（Linux secret-service / gnome-keyring）兼容（fork 补丁）：
+# 与客户端 @napi-rs/keyring 同为 Rust keyring crate，属性布局一致（service + username）
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service"] }
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
