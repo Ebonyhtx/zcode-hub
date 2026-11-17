@@ -1,1 +1,1 @@
-{"bundle":{"createUpdaterArtifacts":false,"targets":["deb","appimage"]}}
+{"bundle":{"createUpdaterArtifacts":false,"icon":["icons/icon.png"],"targets":["deb","appimage"]}}
