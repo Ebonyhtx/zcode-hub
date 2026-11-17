@@ -142,7 +142,46 @@ pub fn dpapi_operate(plain: &[u8], protect: bool) -> Result<Vec<u8>, String> {
         }
         Ok(v)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        // Linux 移植（fork 补丁，非上游实现）：无 DPAPI，用机器绑定密钥替代。
+        // 密钥 = sha256("zcode-hub-snapshots-linux-v1:" + /etc/machine-id + ":" + 用户名)，
+        // 保护格式 = b"ZHL1" + nonce[12] + AES-256-GCM(ct||tag)。强度与 ZCode 自身
+        // fallback 凭据方案同级：同机同用户可解，拷走文件换机/换用户解不开。
+        use aes_gcm::aead::{Aead, KeyInit};
+        use aes_gcm::{Aes256Gcm, Nonce};
+        use sha2::{Digest, Sha256};
+        let machine = std::fs::read_to_string("/etc/machine-id")
+            .or_else(|_| std::fs::read_to_string("/var/lib/dbus/machine-id"))
+            .map(|t| t.trim().to_string())
+            .unwrap_or_else(|_| "unknown-machine".to_string());
+        let user = whoami::username().unwrap_or_default();
+        let mut h = Sha256::new();
+        h.update(format!("zcode-hub-snapshots-linux-v1:{machine}:{user}").as_bytes());
+        let key = h.finalize();
+        let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| e.to_string())?;
+        const MAGIC: &[u8] = b"ZHL1";
+        if protect {
+            let nonce: [u8; 12] = rand::random();
+            let ct = cipher
+                .encrypt(Nonce::from_slice(&nonce), plain)
+                .map_err(|_| "快照密钥保护失败".to_string())?;
+            let mut out = Vec::with_capacity(4 + 12 + ct.len());
+            out.extend_from_slice(MAGIC);
+            out.extend_from_slice(&nonce);
+            out.extend_from_slice(&ct);
+            Ok(out)
+        } else {
+            if plain.len() < 4 + 12 + 16 || &plain[..4] != MAGIC {
+                return Err("快照主密钥格式异常（非 Linux 保护格式）".into());
+            }
+            let nonce = &plain[4..16];
+            cipher
+                .decrypt(Nonce::from_slice(nonce), &plain[16..])
+                .map_err(|_| "快照主密钥解开失败（机器/用户不匹配或文件损坏）".to_string())
+        }
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = (plain, protect);
         Err("此平台暂未支持快照加密（第 0 期占位）".into())
@@ -150,6 +189,42 @@ pub fn dpapi_operate(plain: &[u8], protect: bool) -> Result<Vec<u8>, String> {
 }
 
 // ---------------- 客户端进程管理 ----------------
+
+/// Linux（fork 补丁）：扫描 /proc 找 ZCode 客户端进程（AppImage 本体或其挂载内主程序）。
+/// 排除 Hub 自身（zcode-hub）与当前进程；名字匹配：exe 名 == "zcode"、
+/// 或以 "zcode-" 开头且以 ".appimage" 结尾、或路径含 ".mount_ZCode"。
+#[cfg(target_os = "linux")]
+fn linux_zcode_pids() -> Vec<u32> {
+    let mut out = Vec::new();
+    let me = std::process::id();
+    let Ok(rd) = std::fs::read_dir("/proc") else {
+        return out;
+    };
+    for e in rd.flatten() {
+        let name = e.file_name();
+        let Some(pid) = name.to_str().and_then(|t| t.parse::<u32>().ok()) else {
+            continue;
+        };
+        if pid == me {
+            continue;
+        }
+        let Ok(exe) = std::fs::read_link(e.path().join("exe")) else {
+            continue;
+        };
+        let exe_s = exe.to_string_lossy().to_string();
+        let fname = exe
+            .file_name()
+            .map(|f| f.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        let hit = fname == "zcode"
+            || (fname.starts_with("zcode-") && fname.ends_with(".appimage"))
+            || exe_s.contains(".mount_ZCode");
+        if hit {
+            out.push(pid);
+        }
+    }
+    out
+}
 
 /// 三态进程探测：Err = 探测本身失败（tasklist 不可用/权限/AV 拦截）。
 /// 调用方必须把 Err 当成「不能确认未运行」，绝不能等同于 false。
@@ -166,7 +241,11 @@ pub fn zcode_running() -> Result<bool, String> {
         }
         Ok(String::from_utf8_lossy(&out.stdout).contains("ZCode.exe"))
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        Ok(!linux_zcode_pids().is_empty())
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         Ok(false)
     }
@@ -200,7 +279,34 @@ pub fn kill_zcode_process() -> Result<bool, String> {
         }
         Ok(false)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        // fork 补丁：SIGTERM 轮询，未退再 SIGKILL，与 Windows 版同样的“确认真退”语义
+        let pids = linux_zcode_pids();
+        if pids.is_empty() {
+            return Ok(true);
+        }
+        for pid in &pids {
+            let _ = Command::new("kill").arg(pid.to_string()).output();
+        }
+        for _ in 0..8 {
+            if !zcode_running()? {
+                return Ok(true);
+            }
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        for pid in linux_zcode_pids() {
+            let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
+        }
+        for _ in 0..15 {
+            if !zcode_running()? {
+                return Ok(true);
+            }
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        Ok(false)
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         Ok(false)
     }
@@ -220,7 +326,16 @@ pub fn launch_zcode_process(exe: &str) -> bool {
         .spawn()
         .is_ok()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        Command::new(exe)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .is_ok()
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = exe;
         false
@@ -250,7 +365,46 @@ pub fn detect_zcode_exe(user_path: Option<&str>) -> Option<String> {
         }
         cands.into_iter().find(|c| std::path::Path::new(c).exists())
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        // fork 补丁：用户路径 → 桌面项 Exec → 常见 AppImage/安装位置
+        if let Some(p) = user_path {
+            return Some(p.to_string());
+        }
+        let home = dirs::home_dir().unwrap_or_default();
+        let desktop = home.join(".local/share/applications/zcode.desktop");
+        if let Ok(txt) = std::fs::read_to_string(&desktop) {
+            for line in txt.lines() {
+                if let Some(exec) = line.strip_prefix("Exec=") {
+                    let first = exec.split_whitespace().next().unwrap_or("");
+                    let first = first.trim_matches('"');
+                    if !first.is_empty() && std::path::Path::new(first).exists() {
+                        return Some(first.to_string());
+                    }
+                }
+            }
+        }
+        let mut cands: Vec<PathBuf> = vec![
+            PathBuf::from("/usr/bin/zcode"),
+            PathBuf::from("/usr/local/bin/zcode"),
+            PathBuf::from("/opt/ZCode/ZCode"),
+        ];
+        for dir in [home.join("Applications"), home.clone()] {
+            if let Ok(rd) = std::fs::read_dir(&dir) {
+                for e in rd.flatten() {
+                    let n = e.file_name().to_string_lossy().to_lowercase();
+                    if n.starts_with("zcode") && n.ends_with(".appimage") {
+                        cands.push(e.path());
+                    }
+                }
+            }
+        }
+        cands
+            .into_iter()
+            .find(|c| c.exists())
+            .map(|c| c.to_string_lossy().to_string())
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = user_path;
         None
@@ -351,7 +505,14 @@ pub fn open_in_browser(url: &str) {
                 .spawn();
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        if !is_safe_open_url(url) {
+            return;
+        }
+        let _ = Command::new("xdg-open").arg(url).spawn();
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = url;
     }
@@ -373,12 +534,24 @@ fn startup_lnk() -> PathBuf {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn autostart_desktop() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_default()
+        .join("autostart")
+        .join("zcode-hub.desktop")
+}
+
 pub fn autostart_enabled() -> bool {
     #[cfg(windows)]
     {
         startup_lnk().exists()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        autostart_desktop().exists()
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         false
     }
@@ -409,7 +582,28 @@ pub fn set_autostart_internal(enable: bool) -> Result<(), String> {
         }
         Ok(())
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        // fork 补丁：XDG autostart 桌面项
+        let f = autostart_desktop();
+        if !enable {
+            if f.exists() {
+                std::fs::remove_file(&f).map_err(|e| e.to_string())?;
+            }
+            return Ok(());
+        }
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        if let Some(parent) = f.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let body = format!(
+            "[Desktop Entry]\nType=Application\nName=ZCode Hub\nExec=\"{}\"\nX-GNOME-Autostart-enabled=true\n",
+            exe.display()
+        );
+        std::fs::write(&f, body).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = enable;
         Err("此平台暂未支持开机自启（第 0 期占位）".into())
@@ -543,5 +737,21 @@ pub fn arms_store_dirs() -> Vec<PathBuf> {
     #[cfg(not(windows))]
     {
         Vec::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_snap_protect_roundtrip() {
+        let data = b"zcode-hub-test-snap-key-32bytes!";
+        let sealed = super::dpapi_operate(data, true).expect("protect");
+        assert!(sealed.starts_with(b"ZHL1"));
+        assert_ne!(&sealed[16..], &data[..]);
+        let opened = super::dpapi_operate(&sealed, false).expect("unprotect");
+        assert_eq!(opened, data.to_vec());
+        // 非 Linux 保护格式必须拒绝，而不是假装解开
+        assert!(super::dpapi_operate(b"not-a-sealed-blob-at-all", false).is_err());
     }
 }
