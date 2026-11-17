@@ -328,12 +328,61 @@ pub fn launch_zcode_process(exe: &str) -> bool {
     }
     #[cfg(target_os = "linux")]
     {
-        Command::new(exe)
+        // fork 补丁：旧实现只看 spawn 是否成功且吞掉错误，失败时无从定位。
+        // 改为：直接 spawn → 轮询确认进程真的起来；失败或未起来时用 /bin/sh
+        // 兜底再试一次（覆盖 shebang/权限边角）；全过程写 audit(launch_zcode)。
+        fn wait_running(tries: u32) -> bool {
+            for _ in 0..tries {
+                if matches!(zcode_running(), Ok(true)) {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(300));
+            }
+            false
+        }
+        let mut err = String::new();
+        let mut ok = false;
+        match Command::new(exe)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .is_ok()
+        {
+            Ok(_) => {
+                ok = wait_running(10);
+                if !ok {
+                    err = "spawn 成功但 3 秒内未探测到 ZCode 进程".to_string();
+                }
+            }
+            Err(e) => {
+                err = format!("spawn 失败: {}", e);
+            }
+        }
+        if !ok {
+            match Command::new("/bin/sh")
+                .arg(exe)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+            {
+                Ok(_) => {
+                    ok = wait_running(10);
+                    if !ok {
+                        err.push_str("；sh 兜底后仍未探测到进程");
+                    }
+                }
+                Err(e2) => {
+                    err.push_str(&format!("；sh 兜底 spawn 失败: {}", e2));
+                }
+            }
+        }
+        crate::util::audit_log(
+            "launch_zcode",
+            None,
+            serde_json::json!({"exe": exe, "ok": ok, "error": err}),
+        );
+        ok
     }
     #[cfg(not(any(windows, target_os = "linux")))]
     {
@@ -372,14 +421,20 @@ pub fn detect_zcode_exe(user_path: Option<&str>) -> Option<String> {
             return Some(p.to_string());
         }
         let home = dirs::home_dir().unwrap_or_default();
-        let desktop = home.join(".local/share/applications/zcode.desktop");
-        if let Ok(txt) = std::fs::read_to_string(&desktop) {
-            for line in txt.lines() {
-                if let Some(exec) = line.strip_prefix("Exec=") {
-                    let first = exec.split_whitespace().next().unwrap_or("");
-                    let first = first.trim_matches('"');
-                    if !first.is_empty() && std::path::Path::new(first).exists() {
-                        return Some(first.to_string());
+        // 用户级与系统级 desktop 项都查（Exec 可能指向包装脚本，必须优先于裸
+        // AppImage——包装脚本携带 xrdp/无 GPU 环境必需的启动参数）
+        for desktop in [
+            home.join(".local/share/applications/zcode.desktop"),
+            PathBuf::from("/usr/share/applications/zcode.desktop"),
+        ] {
+            if let Ok(txt) = std::fs::read_to_string(&desktop) {
+                for line in txt.lines() {
+                    if let Some(exec) = line.strip_prefix("Exec=") {
+                        let first = exec.split_whitespace().next().unwrap_or("");
+                        let first = first.trim_matches('"');
+                        if !first.is_empty() && std::path::Path::new(first).exists() {
+                            return Some(first.to_string());
+                        }
                     }
                 }
             }
@@ -389,16 +444,21 @@ pub fn detect_zcode_exe(user_path: Option<&str>) -> Option<String> {
             PathBuf::from("/usr/local/bin/zcode"),
             PathBuf::from("/opt/ZCode/ZCode"),
         ];
+        // AppImage 候选按文件名倒序（版本号在名中，最新版优先），避免 read_dir
+        // 的任意顺序选中旧版本
+        let mut images: Vec<PathBuf> = Vec::new();
         for dir in [home.join("Applications"), home.clone()] {
             if let Ok(rd) = std::fs::read_dir(&dir) {
                 for e in rd.flatten() {
                     let n = e.file_name().to_string_lossy().to_lowercase();
                     if n.starts_with("zcode") && n.ends_with(".appimage") {
-                        cands.push(e.path());
+                        images.push(e.path());
                     }
                 }
             }
         }
+        images.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+        cands.extend(images);
         cands
             .into_iter()
             .find(|c| c.exists())
