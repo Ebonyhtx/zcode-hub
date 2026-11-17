@@ -35,8 +35,9 @@ pub fn oauth_field(provider: &str, kind: &str) -> String {
 /// 注入的解密闭包：enc:v1 密文 → 明文；解不开返回 None
 pub type DecryptFn<'a> = dyn Fn(&str) -> Option<String> + 'a;
 
-/// 账号标签回退链：user_info(username/displayName/name/nickname/email) →
-/// JWT claims(name/email/sub) → active_provider → 占位文案。
+/// 账号标签回退链：user_info(username/displayName/name/nickname/email，含国内版
+/// 驼峰变体与 rawProfile/data 嵌套层，再退到 id 类标识) →
+/// JWT claims(name/email/sub 及国内变体) → active_provider → 占位文案。
 pub fn account_label_with(creds: &Value, decrypt: &DecryptFn) -> String {
     // 优先读 active_provider 对应的 user_info：凭据里可能同时残留其他家族字段，
     // 固定按 zai→bigmodel 顺序会显示成上一个账号。
@@ -49,16 +50,47 @@ pub fn account_label_with(creds: &Value, decrypt: &DecryptFn) -> String {
             order.push(k.to_string());
         }
     }
+    // fork 补丁：国内版（zai_cn/bigmodel）user_info 的字段命名与嵌套层级和国际版
+    // fixture 不同——只查顶层五键会整条落空、误报「(已加密账号)」(解密其实已成功)。
+    // 扩展为：顶层多命名变体 → rawProfile/data/profile/user 嵌套层 → id 类标识兜底。
+    const LABEL_KEYS: [&str; 10] = [
+        "username",
+        "displayName",
+        "name",
+        "nickname",
+        "email",
+        "userName",
+        "nickName",
+        "customerName",
+        "phone",
+        "mobile",
+    ];
+    const ID_KEYS: [&str; 4] = ["id", "user_id", "userId", "customerNumber"];
+    let pick_str = |obj: &Value, keys: &[&str]| -> Option<String> {
+        keys.iter().find_map(|k| {
+            obj.get(k)
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+        })
+    };
     for uk in &order {
         if let Some(raw) = creds.get(uk).and_then(|v| v.as_str()) {
             if let Some(plain) = decrypt(raw) {
                 if let Ok(info) = serde_json::from_str::<Value>(&plain) {
-                    for k in ["username", "displayName", "name", "nickname", "email"] {
-                        if let Some(v) = info.get(k).and_then(|v| v.as_str()) {
-                            if !v.is_empty() {
-                                return v.to_string();
+                    if let Some(v) = pick_str(&info, &LABEL_KEYS) {
+                        return v;
+                    }
+                    for nest in ["rawProfile", "data", "profile", "user", "userInfo"] {
+                        if let Some(inner) = info.get(nest) {
+                            if let Some(v) = pick_str(inner, &LABEL_KEYS) {
+                                return v;
                             }
                         }
+                    }
+                    if let Some(v) = pick_str(&info, &ID_KEYS) {
+                        return v;
                     }
                 }
             }
@@ -74,7 +106,16 @@ pub fn account_label_with(creds: &Value, decrypt: &DecryptFn) -> String {
                     if let Ok(claims) =
                         serde_json::from_str::<Value>(&String::from_utf8_lossy(&bytes))
                     {
-                        for k in ["name", "email", "sub"] {
+                        for k in [
+                            "name",
+                            "email",
+                            "sub",
+                            "username",
+                            "preferred_username",
+                            "user_id",
+                            "uid",
+                            "phone",
+                        ] {
                             if let Some(v) = claims.get(k).and_then(|v| v.as_str()) {
                                 return v.to_string();
                             }

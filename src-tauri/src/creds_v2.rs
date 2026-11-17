@@ -21,7 +21,7 @@ use std::sync::Mutex;
 use zeroize::Zeroizing;
 
 /// 系统凭据库 service 名（与客户端 `systemCredentialCipher` 的 SYSTEM_SERVICE 一致）
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 const SYSTEM_SERVICE: &str = "ZCode Credential Encryption";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,7 +189,38 @@ pub(crate) fn os_key(fingerprint: &str) -> Option<Zeroizing<[u8; 32]>> {
                     .find_map(|(_, blob)| key_from_blob(blob, fingerprint))
             })
     };
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    let found: Option<[u8; 32]> = {
+        // fork 补丁：Linux secret-service（gnome-keyring）读取。
+        // 客户端 @napi-rs/keyring 的 account(username) = sha256(凭据文件绝对路径).hex，
+        // 与 Windows 版同一命名规则；候选路径逐个试，指纹对上才算命中。
+        let mut candidates: Vec<String> = Vec::new();
+        let live = crate::util::cred_path();
+        candidates.push(live.to_string_lossy().to_string());
+        if let Ok(canon) = std::fs::canonicalize(&live) {
+            candidates.push(canon.to_string_lossy().to_string());
+        }
+        if let Some(home) = dirs::home_dir() {
+            candidates.push(
+                home.join(".zcode")
+                    .join("v2")
+                    .join("credentials.json")
+                    .to_string_lossy()
+                    .to_string(),
+            );
+        }
+        candidates.dedup();
+        candidates.iter().find_map(|path_str| {
+            let acct = {
+                let d = Sha256::digest(path_str.as_bytes());
+                d.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+            };
+            let entry = keyring::Entry::new(SYSTEM_SERVICE, &acct).ok()?;
+            let pw = entry.get_password().ok()?;
+            key_from_blob(pw.as_bytes(), fingerprint)
+        })
+    };
+    #[cfg(not(any(windows, target_os = "linux")))]
     let found: Option<[u8; 32]> = None;
     let mut g = OS_KEY_CACHE.lock().unwrap();
     g.get_or_insert_with(HashMap::new)

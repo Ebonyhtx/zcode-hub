@@ -172,7 +172,16 @@ pub(crate) fn credential_secret() -> String {
         .to_string_lossy()
         .to_string();
     let user = whoami::username().unwrap_or_default();
-    format!("zcode-credential-fallback:win32:{}:{}", home, user)
+    // 平台标签须与客户端 Node process.platform 一致（fork 补丁：上游写死 win32，
+    // Linux 上 ZCode 的 fallback secret 用 "linux"，写死 win32 会解不开本机 enc:v1）
+    let platform = if cfg!(windows) {
+        "win32"
+    } else if cfg!(target_os = "macos") {
+        "darwin"
+    } else {
+        "linux"
+    };
+    format!("zcode-credential-fallback:{}:{}:{}", platform, home, user)
 }
 
 // 瞬时派生密钥用 Zeroizing 包裹：作用结束即清零内存；SNAP_KEY 进程级缓存是有意为之（见 DESIGN.md）
