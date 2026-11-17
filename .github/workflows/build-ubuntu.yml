@@ -1,0 +1,73 @@
+name: Build Ubuntu (fork)
+
+# Fork-only workflow: builds the Linux (.deb / .AppImage) variant of ZCode Hub.
+# Upstream ships Windows only; this fork carries minimal Linux platform patches
+# (see src-tauri/src/platform.rs "fork 补丁" marks).
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ubuntu-build]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-ubuntu-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    timeout-minutes: 60
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Tauri Linux prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libsoup-3.0-dev libssl-dev build-essential pkg-config \
+            curl wget file patchelf
+
+      - name: Install Rust (pinned, same as upstream)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.97.1"
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Unit tests (sanity gate)
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Build .deb
+        run: npx --yes @tauri-apps/cli@2.12.4 build --config src-tauri/tauri.linux.conf.json --bundles deb
+
+      - name: Build .AppImage
+        continue-on-error: true
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: npx --yes @tauri-apps/cli@2.12.4 build --config src-tauri/tauri.linux.conf.json --bundles appimage --no-sign
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p dist-ubuntu
+          find src-tauri/target/release/bundle -type f \( -name "*.deb" -o -name "*.AppImage" \) -exec cp -v {} dist-ubuntu/ \; || true
+          cp -v src-tauri/target/release/zcode-hub dist-ubuntu/ || true
+          ls -la dist-ubuntu/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zcode-hub-ubuntu
+          path: dist-ubuntu/
+          if-no-files-found: error
